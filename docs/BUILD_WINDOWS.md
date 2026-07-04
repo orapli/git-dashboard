@@ -1,49 +1,43 @@
 # Building the Windows Installer
 
-Cross-compiling the Windows binary and building the installer both happen entirely on macOS.
-No Windows machine is required (except to verify the result).
+The Windows installer (`.msi`) is built natively on Windows using
+[cargo-wix](https://github.com/volks73/cargo-wix), which wraps the WiX Toolset. This mirrors
+the approach used by the sister product [aero-grep](https://github.com/orapli/aero-grep).
+A Windows machine (or the `windows-latest` GitHub Actions runner) is required — unlike the
+previous NSIS-based installer, this cannot be cross-compiled from macOS/Linux.
 
 ## How it works
 
 | Step | Tool | Notes |
 |---|---|---|
-| Cross-compile | mingw-w64 (`x86_64-pc-windows-gnu` target) | Linker config in `.cargo/config.toml` |
+| Build | `cargo build --release` (native MSVC target) | Runs on `windows-latest` in CI |
 | exe icon/metadata embedding | `build.rs` + winresource | Embeds `assets/icon.ico` |
-| Installer creation | NSIS (`makensis`) | Script at `installer/windows/installer.nsi` |
+| Installer creation | `cargo wix` (WiX Toolset) | Template at `wix/main.wxs` |
 
-The resulting exe is a self-contained binary depending only on standard Windows DLLs
-(including UCRT) — no mingw runtime DLLs need to be bundled; it runs on Windows 10+.
+## Environment Setup (Windows, one-time)
 
-## Environment Setup (one-time)
-
-```sh
-# 1. Install the cross-compiler and NSIS
-brew install mingw-w64 makensis
-
-# 2. Add Rust's Windows target
-rustup target add x86_64-pc-windows-gnu
+```powershell
+# 1. Install Rust: https://rustup.rs
+# 2. Install cargo-wix
+cargo install cargo-wix --version 0.3.8 --locked
 ```
+
+`cargo wix` downloads the WiX Toolset binaries itself on first run; no separate WiX install
+is needed.
 
 ## Build
 
-```sh
-./scripts/build-windows-installer.sh
+```powershell
+cargo wix --nocapture
 ```
 
-That's it. Internally this runs:
-
-1. `cargo build --release --target x86_64-pc-windows-gnu`
-2. `makensis` to produce `dist/GitDashboard-<version>-setup.exe`
-   (version is read automatically from `Cargo.toml`)
-
-If you just want the standalone exe, run step 1 only and take
-`target/x86_64-pc-windows-gnu/release/git-dashboard.exe`.
+This builds the release binary and produces `target\wix\git-dashboard-<version>-x86_64.msi`.
 
 ## Installer Contents
 
 - Install location: `C:\Program Files\Git Dashboard` (changeable)
-- Creates Start Menu and Desktop shortcuts
-- Uninstallable from "Apps & Features" (uninstaller included)
+- Creates a Start Menu shortcut (no desktop shortcut — matches aero-grep and WiX convention)
+- Uninstallable from "Apps & Features" (Windows Installer handles this automatically)
 - User settings (config.json etc. under `%APPDATA%`) are preserved across uninstall
 
 ## Windows-side Prerequisites
@@ -61,22 +55,14 @@ If you just want the standalone exe, run step 1 only and take
 python3 scripts/generate_icon.py
 ```
 
-## Troubleshooting
+## CI
 
-- `mingw-w64 not found` → `brew install mingw-w64`
-- `makensis not found` → `brew install makensis`
-- `Rust target not installed` → `rustup target add x86_64-pc-windows-gnu`
-- On linker errors, check that `x86_64-w64-mingw32-gcc` (referenced in
-  `.cargo/config.toml`) is on PATH (`which x86_64-w64-mingw32-gcc`)
+`.github/workflows/release.yml`'s `windows` job runs on `windows-latest`, installs cargo-wix,
+and runs `cargo wix --nocapture`. The resulting `.msi` is uploaded as a release artifact
+alongside the macOS build.
 
-## (Reference) Building Natively on Windows
+## Signing
 
-If you'd rather build on Windows without cross-compiling:
-
-1. Install Rust (rustup) and Visual Studio Build Tools
-2. Install NSIS 3.x and add `makensis` to PATH
-3. `cargo build --release` (MSVC target)
-4. `makensis -DAPP_VERSION=<ver> -DEXE_PATH=..\..\target\release\git-dashboard.exe installer\windows\installer.nsi`
-
-If code signing is needed (to avoid SmartScreen warnings), prepare a signing certificate and run
-`signtool` around step 4.
+The installer is currently unsigned (Windows SmartScreen will warn on first run). See
+`HUMAN_TODO.md` for the pending SignPath Foundation application, which will sign this MSI
+once approved.
