@@ -129,7 +129,8 @@ impl GitDashboardApp {
 
         let mut start_angle = -std::f32::consts::FRAC_PI_2; // start at the top
 
-        for &(_label, percentage, color) in slices {
+        for item in slices {
+            let (_label, percentage, color) = *item;
             if percentage <= 0.0 {
                 continue;
             }
@@ -169,7 +170,8 @@ impl GitDashboardApp {
 
         // Legend (top 5 slices)
         let mut y_offset = rect.top() + chart_size + 6.0;
-        for &(label, percentage, color) in slices.iter().take(5) {
+        for item in slices.iter().take(5) {
+            let (label, percentage, color) = *item;
             let item_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + 2.0, y_offset + 1.0),
                 egui::pos2(rect.left() + 10.0, y_offset + 9.0),
@@ -191,9 +193,10 @@ impl GitDashboardApp {
 pub fn icon_button(
     ui: &mut egui::Ui,
     icon: &str,
-    tooltip: &str,
+    tooltip: impl Into<String>,
     theme: &crate::theme::Theme,
 ) -> egui::Response {
+    let tooltip = tooltip.into();
     let size = egui::vec2(22.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
