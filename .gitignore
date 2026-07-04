@@ -1,0 +1,7 @@
+/target
+/config.json
+/members.json
+/tech_rules.json
+/dist
+.DS_Store
+.claude/

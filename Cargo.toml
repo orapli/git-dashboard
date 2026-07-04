@@ -1,0 +1,29 @@
+[package]
+name = "git-dashboard"
+version = "0.2.2"
+edition = "2024"
+description = "A dashboard for visualizing Git repository commits, branches, and contributors"
+authors = ["orapli"]
+homepage = "https://github.com/orapli/git-dashboard"
+repository = "https://github.com/orapli/git-dashboard"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.35", features = ["persistence"] }
+egui = "0.35"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+directories = "5.0"
+rfd = "0.14"
+# better_syntax_highlighting: syntax coloring for README code blocks (syntect-based)
+egui_commonmark = { version = "0.24", features = ["better_syntax_highlighting"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+# Smaller distributable binaries (installer payload)
+[profile.release]
+strip = true
+lto = "thin"
