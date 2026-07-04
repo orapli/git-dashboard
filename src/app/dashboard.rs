@@ -2068,8 +2068,7 @@ impl GitDashboardApp {
                             ui.vertical(|ui| {
                                 ui.label(
                                     egui::RichText::new(
-                                        &self.members[state.selected_member_idx]
-                                            .canonical_name,
+                                        &self.members[state.selected_member_idx].canonical_name,
                                     )
                                     .strong()
                                     .color(t.text),
@@ -2077,10 +2076,7 @@ impl GitDashboardApp {
                                 ui.add_space(4.0);
                                 ui.add(
                                     egui::TextEdit::singleline(&mut state.filter_query)
-                                        .hint_text(crate::i18n::t(
-                                            lang,
-                                            "filter_placeholder",
-                                        ))
+                                        .hint_text(crate::i18n::t(lang, "filter_placeholder"))
                                         .desired_width(180.0),
                                 );
                                 ui.add_space(4.0);
@@ -2088,9 +2084,7 @@ impl GitDashboardApp {
                                     .max_height(160.0)
                                     .show(ui, |ui| {
                                         let q = state.filter_query.to_lowercase();
-                                        for (idx, member) in
-                                            self.members.iter().enumerate()
-                                        {
+                                        for (idx, member) in self.members.iter().enumerate() {
                                             if !q.is_empty()
                                                 && !member
                                                     .canonical_name
@@ -2099,13 +2093,9 @@ impl GitDashboardApp {
                                             {
                                                 continue;
                                             }
-                                            let selected =
-                                                state.selected_member_idx == idx;
+                                            let selected = state.selected_member_idx == idx;
                                             if ui
-                                                .selectable_label(
-                                                    selected,
-                                                    &member.canonical_name,
-                                                )
+                                                .selectable_label(selected, &member.canonical_name)
                                                 .clicked()
                                             {
                                                 state.selected_member_idx = idx;
