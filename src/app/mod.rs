@@ -2038,14 +2038,27 @@ impl eframe::App for GitDashboardApp {
                                 });
                                 ui.add_space(3.0);
 
-                                // Quick filter for sidebar repo list
+                                // Quick filter and sort cycle for sidebar repo list
                                 ui.horizontal(|ui| {
                                     ui.add_space(SIDEBAR_PADDING);
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.sidebar_search_query)
                                             .hint_text(crate::i18n::t(lang, "filter_placeholder"))
-                                            .desired_width(180.0),
+                                            .desired_width(158.0),
                                     );
+                                    let sort_tooltip = match self.repo_sort_by {
+                                        0 => crate::i18n::t(lang, "sort_name_asc"),
+                                        1 => crate::i18n::t(lang, "sort_name_desc"),
+                                        2 => crate::i18n::t(lang, "sort_updated_desc"),
+                                        _ => crate::i18n::t(lang, "sort_updated_asc"),
+                                    };
+                                    if ui
+                                        .add(egui::Button::new("⇅").small())
+                                        .on_hover_text(sort_tooltip)
+                                        .clicked()
+                                    {
+                                        self.repo_sort_by = (self.repo_sort_by + 1) % 4;
+                                    }
                                 });
                                 ui.add_space(8.0);
                             }
@@ -2054,25 +2067,42 @@ impl eframe::App for GitDashboardApp {
                             // lives in a separate bottom panel, so this can scroll freely.
                             let mut clicked_repo_idx = None;
                             egui::ScrollArea::vertical().show(ui, |ui| {
-                                let repos_snapshot: Vec<_> = self
-                                    .repositories
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(i, r)| (i, r.name.clone(), r.path.clone()))
-                                    .collect();
+                                let sorted_items = {
+                                    let input: Vec<home::RepoFilterSortInput> = self
+                                        .repositories
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(idx, repo)| {
+                                            let last_commit_date =
+                                                if let Some(Ok(data)) = self.repo_cache.get(&idx) {
+                                                    data.recent_commits
+                                                        .first()
+                                                        .map(|c| c.date.clone())
+                                                        .unwrap_or_default()
+                                                } else {
+                                                    String::new()
+                                                };
+                                            home::RepoFilterSortInput {
+                                                index: idx,
+                                                name: repo.name.clone(),
+                                                path: repo.path.to_string_lossy().to_string(),
+                                                last_commit_date,
+                                                language: String::new(),
+                                                framework: String::new(),
+                                            }
+                                        })
+                                        .collect();
+                                    home::filter_and_sort_repositories(
+                                        input,
+                                        &self.sidebar_search_query,
+                                        self.repo_sort_by,
+                                    )
+                                };
 
-                                for (idx, name, path) in &repos_snapshot {
-                                    let idx = *idx;
-                                    if !self.prefs.sidebar_collapsed
-                                        && !self.sidebar_search_query.is_empty()
-                                    {
-                                        let q = self.sidebar_search_query.to_lowercase();
-                                        if !name.to_lowercase().contains(&q)
-                                            && !path.to_string_lossy().to_lowercase().contains(&q)
-                                        {
-                                            continue;
-                                        }
-                                    }
+                                for item in &sorted_items {
+                                    let idx = item.index;
+                                    let name = &item.name;
+                                    let path = std::path::PathBuf::from(&item.path);
 
                                     let is_selected = self.selected_repo_index == Some(idx)
                                         && !self.viewing_settings
@@ -2085,7 +2115,7 @@ impl eframe::App for GitDashboardApp {
                                         (0, true)
                                     };
 
-                                    let dot_color = match self.pull_statuses.get(path) {
+                                    let dot_color = match self.pull_statuses.get(&path) {
                                         Some(PullState::Pulling) => t.accent,
                                         Some(PullState::Success(_)) => t.success,
                                         Some(PullState::Error(_)) => t.error,
