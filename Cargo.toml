@@ -1,6 +1,6 @@
 [package]
 name = "git-dashboard"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "A dashboard for visualizing Git repository commits, branches, and contributors"
 authors = ["orapli"]
