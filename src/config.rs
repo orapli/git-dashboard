@@ -19,6 +19,14 @@ pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
 pub struct Repository {
     pub name: String,
     pub path: PathBuf,
+    #[serde(default)]
+    pub host: Option<String>,
+}
+
+/// Extract the SSH host string from an `ssh://user@host/path` locator.
+/// Returns None for local paths.
+pub fn repo_host(path: &Path) -> Option<String> {
+    crate::git::parse_ssh_repo(path).map(|(h, _)| h)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

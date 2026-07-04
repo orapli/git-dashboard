@@ -183,8 +183,9 @@ impl GitDashboardApp {
                                                     ));
                                                 } else {
                                                     self.repo_cache_gen += 1;
+                                                    let host = config::repo_host(&path);
                                                     self.repositories
-                                                        .push(Repository { name, path });
+                                                        .push(Repository { name, path, host });
                                                     added += 1;
                                                 }
                                             }
@@ -278,9 +279,11 @@ impl GitDashboardApp {
                             });
                         } else {
                             self.repo_cache_gen += 1;
+                            let host = config::repo_host(&path);
                             self.repositories.push(Repository {
                                 name: self.new_repo_name.trim().to_string(),
                                 path: path.clone(),
+                                host,
                             });
                             let _ = config::save_repositories(&self.repositories);
                             self.new_repo_name.clear();
