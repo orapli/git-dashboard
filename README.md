@@ -101,3 +101,28 @@ Configuration files are automatically generated in the standard OS config direct
 
 For developer commands, codebase structure, and UI guidelines, refer to [CLAUDE.md](CLAUDE.md).
 CI checks enforce `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test`.
+
+## Code signing policy
+
+Every release is built exclusively by the `.github/workflows/release.yml` GitHub Actions
+workflow, triggered by a `v*` tag on this repository's `main` branch — never from a local or
+otherwise unverifiable build. The workflow:
+
+1. Checks out the exact tagged commit (no local modifications, no cherry-picked source).
+2. Builds the Windows installer (`scripts/build-windows-installer.sh`, cross-compiled with
+   mingw-w64) and the macOS app bundle (`scripts/build-macos-app.sh`) from that commit only.
+3. Publishes both artifacts to a **draft** GitHub Release; a maintainer reviews and manually
+   publishes it — nothing is signed or distributed automatically without human review.
+
+**Current status:** releases are not yet code-signed. Windows installer signing is being set
+up via [SignPath.io](https://signpath.io), using a certificate provided through the
+[SignPath Foundation](https://signpath.org)'s free code-signing program for open source
+projects; once active, the signing step will run inside the CI workflow described above, and
+SignPath will never receive anything except the exact artifact GitHub Actions built from the
+tagged source. Until then, and for macOS builds (not currently planned to be signed or
+notarized), see the release notes for the Gatekeeper/SmartScreen bypass steps needed on first
+launch.
+
+Privacy policy: this application makes no network calls other than the `git` operations a user
+explicitly initiates against repositories they configure (e.g. pull/fetch); it collects no
+telemetry and transmits no data to the developers or any third party.
