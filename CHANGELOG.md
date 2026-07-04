@@ -6,3 +6,4 @@
 - [task_034] Replace Japanese child-process wait error message in run_with_timeout with English
 - [task_035] Localize application window title using startup language preference
 - [task_036] Sort member list in Settings by name (case-insensitive ascending)
+- [task_037] Replace ComboBox with filterable member picker in Add Alias dialog
