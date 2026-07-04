@@ -150,6 +150,7 @@ pub(crate) struct AddAliasDialogState {
     pub contributor_name: String,
     pub contributor_email: String,
     pub selected_member_idx: usize,
+    pub filter_query: String,
     pub error_msg: Option<String>,
 }
 
