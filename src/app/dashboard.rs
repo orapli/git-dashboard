@@ -274,11 +274,9 @@ impl GitDashboardApp {
             ];
             for (i, label) in tab_labels.iter().enumerate() {
                 let is_active = self.dashboard_tab == i;
-                let text = egui::RichText::new(*label).size(13.0).color(if is_active {
-                    t.text
-                } else {
-                    t.text_dim
-                });
+                let text = egui::RichText::new(label.clone())
+                    .size(13.0)
+                    .color(if is_active { t.text } else { t.text_dim });
                 let resp = ui
                     .selectable_label(is_active, text)
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -408,7 +406,9 @@ impl GitDashboardApp {
                                 ui.vertical_centered(|ui| {
                                     ui.add_space(6.0);
                                     ui.label(
-                                        egui::RichText::new(*label).color(t.text_faint).size(10.0),
+                                        egui::RichText::new(label.clone())
+                                            .color(t.text_faint)
+                                            .size(10.0),
                                     );
                                     ui.add_space(2.0);
                                     ui.label(
@@ -571,7 +571,7 @@ impl GitDashboardApp {
             .show(ui, |ui| {
                 // Period selector: 30 days renders straight from RepoData,
                 // other periods fetch an override on a worker thread
-                let periods: [(&str, usize); 5] = [
+                let periods: [(String, usize); 5] = [
                     (crate::i18n::t(lang, "30日"), 30),
                     (crate::i18n::t(lang, "90日"), 90),
                     (crate::i18n::t(lang, "180日"), 180),
@@ -587,7 +587,7 @@ impl GitDashboardApp {
                     for (label, days) in periods {
                         let sel = self.activity_period_days == days;
                         if ui
-                            .selectable_label(sel, label)
+                            .selectable_label(sel, label.as_str())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                             && !sel
@@ -752,13 +752,13 @@ impl GitDashboardApp {
                     // Donut: top 7 + "Other". OSS clones can have thousands of
                     // contributors; one slice each was unreadable and painted
                     // thousands of polygons per frame.
-                    let mut contrib_slices: Vec<(&str, f32, Color32)> = contributors
+                    let mut contrib_slices: Vec<(String, f32, Color32)> = contributors
                         .iter()
                         .take(7)
                         .enumerate()
                         .map(|(i, c)| {
                             (
-                                c.name.as_str(),
+                                c.name.clone(),
                                 c.percentage as f32,
                                 chart_colors[i % chart_colors.len()],
                             )
@@ -965,7 +965,11 @@ impl GitDashboardApp {
                         });
                         ui.add_space(8.0);
                         ui.vertical_centered(|ui| {
-                            self.draw_pie_chart(ui, &contrib_slices);
+                            let slices_ref: Vec<(&str, f32, Color32)> = contrib_slices
+                                .iter()
+                                .map(|(name, pct, color)| (name.as_str(), *pct, *color))
+                                .collect();
+                            self.draw_pie_chart(ui, &slices_ref);
                         });
                     });
                 });

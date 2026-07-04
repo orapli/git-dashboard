@@ -1,6 +1,8 @@
 // Windows: GUI subsystem so launching the app doesn't open a console window
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+rust_i18n::i18n!("locales", fallback = "en");
+
 mod app;
 mod config;
 mod git;

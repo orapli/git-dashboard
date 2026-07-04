@@ -407,7 +407,7 @@ impl GitDashboardApp {
             let repo_name = self
                 .repositories
                 .get(repo_idx)
-                .map(|r| r.name.as_str())
+                .map(|r| r.name.clone())
                 .unwrap_or_else(|| crate::i18n::t(lang, "unknown"));
             let mut back_clicked = false;
             if super::widgets::icon_button(

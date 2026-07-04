@@ -19,9 +19,10 @@ fn open_in_file_manager(path: &std::path::Path) {
 fn settings_row(
     ui: &mut egui::Ui,
     theme: &crate::theme::Theme,
-    label: &str,
+    label: impl AsRef<str>,
     content: impl FnOnce(&mut egui::Ui),
 ) {
+    let label = label.as_ref();
     ui.horizontal(|ui| {
         let row_h = ui.spacing().interact_size.y;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(152.0, row_h), egui::Sense::hover());
@@ -82,7 +83,7 @@ impl GitDashboardApp {
                 if ui
                     .add(egui::Button::selectable(
                         is_active,
-                        egui::RichText::new(*label).size(12.0).color(color),
+                        egui::RichText::new(label.clone()).size(12.0).color(color),
                     ))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
@@ -1192,8 +1193,16 @@ impl GitDashboardApp {
                         .spacing([20.0, 6.0])
                         .show(ui, |ui| {
                             for (key, desc) in &shortcuts {
-                                ui.label(egui::RichText::new(*key).monospace().color(t.accent));
-                                ui.label(egui::RichText::new(*desc).size(12.0).color(t.text_dim));
+                                ui.label(
+                                    egui::RichText::new(key.to_string())
+                                        .monospace()
+                                        .color(t.accent),
+                                );
+                                ui.label(
+                                    egui::RichText::new(desc.to_string())
+                                        .size(12.0)
+                                        .color(t.text_dim),
+                                );
                                 ui.end_row();
                             }
                         });

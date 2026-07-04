@@ -17,6 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 directories = "5.0"
 rfd = "0.14"
+rust-i18n = "3"
 # better_syntax_highlighting: syntax coloring for README code blocks (syntect-based)
 egui_commonmark = { version = "0.24", features = ["better_syntax_highlighting"] }
 
