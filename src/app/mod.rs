@@ -737,6 +737,8 @@ pub struct GitDashboardApp {
     pub(crate) command_palette_open: bool,
     pub(crate) command_palette_query: String,
     pub(crate) command_palette_selected: usize,
+
+    app_icon: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone)]
@@ -820,6 +822,14 @@ impl GitDashboardApp {
                 }
             });
         }
+
+        // Load the app icon texture once at startup so the sidebar header can
+        // render the real icon instead of the 'G' placeholder.
+        let icon_bytes = include_bytes!("../../assets/icon-64.rgba");
+        let icon_image = egui::ColorImage::from_rgba_unmultiplied([64, 64], icon_bytes);
+        let app_icon_handle =
+            cc.egui_ctx
+                .load_texture("app-icon", icon_image, egui::TextureOptions::LINEAR);
 
         // Initialize application state
         let mut app = Self {
@@ -932,6 +942,8 @@ impl GitDashboardApp {
             command_palette_open: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+
+            app_icon: Some(app_icon_handle),
         };
 
         // Pre-populate from the disk cache so home/dashboards render instantly.
@@ -1912,14 +1924,26 @@ impl eframe::App for GitDashboardApp {
                                     let resp = resp
                                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                                         .on_hover_text(crate::i18n::t(lang, "back_to_home"));
-                                    ui.painter().rect_filled(rect, 4.0, t.accent);
-                                    ui.painter().text(
-                                        rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        "G",
-                                        egui::FontId::proportional(14.0),
-                                        Color32::WHITE,
-                                    );
+                                    if let Some(ref icon) = self.app_icon {
+                                        ui.painter().image(
+                                            icon.id(),
+                                            rect,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    } else {
+                                        ui.painter().rect_filled(rect, 4.0, t.accent);
+                                        ui.painter().text(
+                                            rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "G",
+                                            egui::FontId::proportional(14.0),
+                                            Color32::WHITE,
+                                        );
+                                    }
                                     if resp.clicked() {
                                         self.selected_repo_index = None;
                                         self.viewing_settings = false;
