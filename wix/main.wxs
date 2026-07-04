@@ -1,0 +1,101 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+    <Product
+        Id='*'
+        Name='Git Dashboard'
+        UpgradeCode='4BCB24A1-9CC9-463F-862D-D3B97D3F5127'
+        Manufacturer='orapli'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package
+            Id='*'
+            Keywords='Installer'
+            Description='Git Repository Analysis Dashboard'
+            Manufacturer='orapli'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            SummaryCodepage='1252' />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1' />
+        <Property Id='DiskPrompt' Value='Git Dashboard Installation' />
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramFiles64Folder' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Git Dashboard'>
+
+                    <Component Id='License' Guid='BED7D78F-5681-4450-80A8-9110516943F9'>
+                        <File Id='LicenseFile'
+                            Name='LICENSE'
+                            DiskId='1'
+                            Source='LICENSE'
+                            KeyPath='yes' />
+                    </Component>
+
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='binary0' Guid='F7AE2B0B-92D3-413F-B80A-9F508A1E6E7A'>
+                            <File Id='exe0'
+                                Name='git-dashboard.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\git-dashboard.exe'
+                                KeyPath='yes' />
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Git Dashboard' />
+            </Directory>
+        </Directory>
+
+        <DirectoryRef Id='ApplicationProgramsFolder'>
+            <Component Id='ApplicationShortcut' Guid='D6F7CD63-CA1B-4F4B-87B4-853C1D5CEDC2'>
+                <Shortcut Id='ApplicationStartMenuShortcut'
+                    Name='Git Dashboard'
+                    Description='Git Repository Analysis Dashboard'
+                    Target='[APPLICATIONFOLDER]bin\git-dashboard.exe'
+                    WorkingDirectory='APPLICATIONFOLDER' />
+                <RemoveFolder Id='CleanUpShortcut'
+                    Directory='ApplicationProgramsFolder'
+                    On='uninstall' />
+                <RegistryValue
+                    Root='HKCU'
+                    Key='Software\orapli\git-dashboard'
+                    Name='installed'
+                    Type='integer'
+                    Value='1'
+                    KeyPath='yes' />
+            </Component>
+        </DirectoryRef>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs all binaries and the license.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='License' />
+            <ComponentRef Id='binary0' />
+            <ComponentRef Id='ApplicationShortcut' />
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize' />
+        <Property Id='ARPHELPLINK' Value='https://github.com/orapli/git-dashboard' />
+
+        <UI>
+            <UIRef Id='WixUI_Minimal' />
+        </UI>
+
+        <WixVariable Id='WixUILicenseRtf' Value='wix\License.rtf' />
+    </Product>
+</Wix>

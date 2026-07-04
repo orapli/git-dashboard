@@ -11,30 +11,26 @@ env:
 
 jobs:
   windows:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install mingw-w64 and NSIS
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 nsis
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --version 0.3.8 --locked
 
-      - name: Build Windows installer
-        run: ./scripts/build-windows-installer.sh
+      - name: Build MSI
+        run: cargo wix --nocapture
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: dist/*.exe
+          path: target/wix/*.msi
           if-no-files-found: error
 
   macos:

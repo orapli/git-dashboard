@@ -9,7 +9,7 @@ For user-facing feature overview and setup, see [README.md](README.md).
 * **Debug build & run**: `cargo run`
 * **Release build & run**: `cargo run --release`
 * **Run tests**: `cargo test`
-* **Build Windows installer (fully on macOS)**: `./scripts/build-windows-installer.sh`
+* **Build Windows installer (native Windows only)**: `cargo wix --nocapture` (see `docs/BUILD_WINDOWS.md`)
 
 Verification steps after any change: `cargo fmt` → `cargo clippy --all-targets` (zero warnings)
 → `cargo test` → `cargo run`.
@@ -33,8 +33,8 @@ git-dashboard/
 ├── Cargo.toml          # Project dependencies (eframe/egui/regex/serde/chrono etc.)
 ├── build.rs            # Embeds exe icon/version info for Windows builds (winresource)
 ├── assets/             # App icons (regeneratable via scripts/generate_icon.py)
-├── installer/windows/  # NSIS installer script
-├── scripts/            # Installer build / icon generation scripts
+├── wix/                # cargo-wix (WiX Toolset) MSI installer template
+├── scripts/            # macOS app bundle / icon generation scripts
 ├── src/
 │   ├── main.rs         # Entry point. eframe init, window setup.
 │   ├── app/            # Application UI and state (GitDashboardApp)

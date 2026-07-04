@@ -109,8 +109,8 @@ workflow, triggered by a `v*` tag on this repository's `main` branch — never f
 otherwise unverifiable build. The workflow:
 
 1. Checks out the exact tagged commit (no local modifications, no cherry-picked source).
-2. Builds the Windows installer (`scripts/build-windows-installer.sh`, cross-compiled with
-   mingw-w64) and the macOS app bundle (`scripts/build-macos-app.sh`) from that commit only.
+2. Builds the Windows installer (`cargo wix`, native build on `windows-latest`) and the macOS
+   app bundle (`scripts/build-macos-app.sh`) from that commit only.
 3. Publishes both artifacts to a **draft** GitHub Release; a maintainer reviews and manually
    publishes it — nothing is signed or distributed automatically without human review.
 

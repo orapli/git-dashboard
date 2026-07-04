@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- [infra] Replace the NSIS-based Windows installer (cross-compiled with mingw-w64) with an
+  MSI built by `cargo-wix` natively on `windows-latest`, matching the sister product
+  aero-grep. The installer now creates a Start Menu shortcut only (no desktop shortcut),
+  and the installer UI is English-only — see `docs/BUILD_WINDOWS.md`.
+
 - [task_033] Localize pull and fetch operation messages via user language preference
 - [task_034] Replace Japanese child-process wait error message in run_with_timeout with English
 - [task_035] Localize application window title using startup language preference

@@ -93,11 +93,10 @@ cargo build --release
 
 ---
 
-## Cross-Compiling (macOS → Windows)
+## Windows Installer
 
-Cross-compiling from macOS to Windows (`x86_64-pc-windows-gnu` + mingw-w64) is supported, and the
-installer can be built entirely on macOS (verified working). See [BUILD_WINDOWS.md](BUILD_WINDOWS.md)
-for the steps.
+The Windows `.msi` installer is built natively on Windows with `cargo-wix` (no macOS
+cross-compiling). See [BUILD_WINDOWS.md](BUILD_WINDOWS.md) for the steps.
 
 ---
 
