@@ -826,8 +826,7 @@ impl GitDashboardApp {
         // Load the app icon texture once at startup so the sidebar header can
         // render the real icon instead of the 'G' placeholder.
         let icon_bytes = include_bytes!("../../assets/icon-64.rgba");
-        let icon_image =
-            egui::ColorImage::from_rgba_unmultiplied([64, 64], icon_bytes);
+        let icon_image = egui::ColorImage::from_rgba_unmultiplied([64, 64], icon_bytes);
         let app_icon_handle =
             cc.egui_ctx
                 .load_texture("app-icon", icon_image, egui::TextureOptions::LINEAR);
