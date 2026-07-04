@@ -939,6 +939,7 @@ impl GitDashboardApp {
                                     contributor_name: name,
                                     contributor_email: email,
                                     selected_member_idx: 0,
+                                    filter_query: String::new(),
                                     error_msg: None,
                                 });
                             }
@@ -2064,20 +2065,54 @@ impl GitDashboardApp {
                                     .color(t.text_dim),
                             );
 
-                            let selected_name = self.members[state.selected_member_idx]
-                                .canonical_name
-                                .clone();
-                            egui::ComboBox::from_id_salt("alias_target_member_combo")
-                                .selected_text(selected_name)
-                                .show_ui(ui, |ui| {
-                                    for (idx, member) in self.members.iter().enumerate() {
-                                        ui.selectable_value(
-                                            &mut state.selected_member_idx,
-                                            idx,
-                                            &member.canonical_name,
-                                        );
-                                    }
-                                });
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        &self.members[state.selected_member_idx]
+                                            .canonical_name,
+                                    )
+                                    .strong()
+                                    .color(t.text),
+                                );
+                                ui.add_space(4.0);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.filter_query)
+                                        .hint_text(crate::i18n::t(
+                                            lang,
+                                            "filter_placeholder",
+                                        ))
+                                        .desired_width(180.0),
+                                );
+                                ui.add_space(4.0);
+                                egui::ScrollArea::vertical()
+                                    .max_height(160.0)
+                                    .show(ui, |ui| {
+                                        let q = state.filter_query.to_lowercase();
+                                        for (idx, member) in
+                                            self.members.iter().enumerate()
+                                        {
+                                            if !q.is_empty()
+                                                && !member
+                                                    .canonical_name
+                                                    .to_lowercase()
+                                                    .contains(&q)
+                                            {
+                                                continue;
+                                            }
+                                            let selected =
+                                                state.selected_member_idx == idx;
+                                            if ui
+                                                .selectable_label(
+                                                    selected,
+                                                    &member.canonical_name,
+                                                )
+                                                .clicked()
+                                            {
+                                                state.selected_member_idx = idx;
+                                            }
+                                        }
+                                    });
+                            });
                             ui.end_row();
                         });
 
