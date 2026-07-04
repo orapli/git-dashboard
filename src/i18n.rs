@@ -18,6 +18,8 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::Japanese, "settings") => "設定",
         (Language::English, "language") => "Language",
         (Language::Japanese, "language") => "言語",
+        (Language::English, "theme_label") => "Theme:",
+        (Language::Japanese, "theme_label") => "テーマ:",
         (Language::English, "english") => "English",
         (Language::Japanese, "english") => "English",
         (Language::English, "japanese") => "Japanese",
@@ -76,6 +78,12 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::Japanese, "display_name_hint") => "例: my-project",
         (Language::English, "path_label") => "Path",
         (Language::Japanese, "path_label") => "パス",
+        (Language::English, "remote_repo_hint") => {
+            "You can enter a local path or a remote (SSH) repository URL"
+        }
+        (Language::Japanese, "remote_repo_hint") => {
+            "ローカルパスまたはリモート(SSH)リポジトリのURLを入力できます"
+        }
         (Language::English, "path_hint") => {
             "/home/user/repos/my-project or ssh://user@host/path/to/repo"
         }
@@ -207,7 +215,7 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::English, "30日") => "30 Days",
         (Language::Japanese, "30日") => "30日",
         (Language::English, "90日") => "90 Days",
-        (Language::Japanese, "90日") => "90 Days",
+        (Language::Japanese, "90日") => "90日",
         (Language::English, "180日") => "180 Days",
         (Language::Japanese, "180日") => "180日",
         (Language::English, "compare_btn") => "Compare",
@@ -220,6 +228,8 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::Japanese, "clear_selection_hint") => "選択をクリア",
         (Language::English, "back_to_home") => "Back to Home",
         (Language::Japanese, "back_to_home") => "ホームへ戻る",
+        (Language::English, "home") => "Home",
+        (Language::Japanese, "home") => "ホーム",
         (Language::English, "refresh_status") => "Refresh status",
         (Language::Japanese, "refresh_status") => "最新状態に更新",
         (Language::English, "syncing") => "Syncing",
@@ -458,6 +468,8 @@ pub fn t(lang: Language, key: &str) -> &str {
         (Language::Japanese, "swap_base_target") => "base と target を入れ替え",
         (Language::English, "working_tree_hover") => "Uncommitted changes (working copy)",
         (Language::Japanese, "working_tree_hover") => "未コミットの変更 (作業コピー)",
+        (Language::English, "working_tree") => "Working Tree",
+        (Language::Japanese, "working_tree") => "作業ツリー",
         (Language::English, "re_run_compare") => "Re-run comparison",
         (Language::Japanese, "re_run_compare") => "比較を再実行",
         (Language::English, "merge_base_checkbox") => "From common ancestor",

@@ -2578,7 +2578,8 @@ impl eframe::App for GitDashboardApp {
                         }
                         if ui
                             .button(
-                                egui::RichText::new(crate::i18n::t(lang, "delete")).color(t.error),
+                                egui::RichText::new(crate::i18n::t(lang, "delete_action"))
+                                    .color(t.error),
                             )
                             .clicked()
                         {
