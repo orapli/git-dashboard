@@ -5,3 +5,4 @@
 - [task_033] Localize pull and fetch operation messages via user language preference
 - [task_034] Replace Japanese child-process wait error message in run_with_timeout with English
 - [task_035] Localize application window title using startup language preference
+- [task_036] Sort member list in Settings by name (case-insensitive ascending)

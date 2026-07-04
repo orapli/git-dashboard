@@ -700,8 +700,18 @@ impl GitDashboardApp {
                         let mut status_changed = false;
                         let mut save_edit_member = None;
 
-                        let members_len = self.members.len();
-                        for (idx, member) in self.members.iter_mut().enumerate() {
+                        let sorted_indices: Vec<usize> = {
+                            let mut v: Vec<usize> = (0..self.members.len()).collect();
+                            v.sort_by(|&a, &b| {
+                                self.members[a]
+                                    .canonical_name
+                                    .to_lowercase()
+                                    .cmp(&self.members[b].canonical_name.to_lowercase())
+                            });
+                            v
+                        };
+                        let members_len = sorted_indices.len();
+                        for (pos, idx) in sorted_indices.iter().copied().enumerate() {
                             if self.editing_member_idx == Some(idx) {
                                 let mut r_edit1 = None;
                                 let mut r_edit2 = None;
@@ -844,11 +854,11 @@ impl GitDashboardApp {
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.label(
-                                            egui::RichText::new(&member.canonical_name)
+                                            egui::RichText::new(&self.members[idx].canonical_name)
                                                 .strong()
                                                 .color(t.text),
                                         );
-                                        if member.aliases.is_empty() {
+                                        if self.members[idx].aliases.is_empty() {
                                             ui.label(
                                                 egui::RichText::new(crate::i18n::t(
                                                     lang,
@@ -859,9 +869,11 @@ impl GitDashboardApp {
                                             );
                                         } else {
                                             ui.label(
-                                                egui::RichText::new(member.aliases.join(", "))
-                                                    .size(10.0)
-                                                    .color(t.text_faint),
+                                                egui::RichText::new(
+                                                    self.members[idx].aliases.join(", "),
+                                                )
+                                                .size(10.0)
+                                                .color(t.text_faint),
                                             );
                                         }
                                     });
@@ -889,15 +901,15 @@ impl GitDashboardApp {
                                             {
                                                 self.editing_member_idx = Some(idx);
                                                 self.editing_member_name =
-                                                    member.canonical_name.clone();
+                                                    self.members[idx].canonical_name.clone();
                                                 self.editing_member_aliases =
-                                                    member.aliases.join(", ");
+                                                    self.members[idx].aliases.join(", ");
                                                 self.editing_member_error = None;
                                             }
                                             ui.add_space(8.0);
                                             if ui
                                                 .checkbox(
-                                                    &mut member.is_active,
+                                                    &mut self.members[idx].is_active,
                                                     crate::i18n::t(lang, "is_active_checkbox"),
                                                 )
                                                 .changed()
@@ -908,7 +920,7 @@ impl GitDashboardApp {
                                     );
                                 });
                             }
-                            if idx + 1 < members_len {
+                            if pos + 1 < members_len {
                                 ui.add(egui::Separator::default().spacing(8.0));
                             }
                         }
