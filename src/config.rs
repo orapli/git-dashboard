@@ -23,8 +23,6 @@ pub struct Repository {
     pub host: Option<String>,
 }
 
-/// Extract the SSH host string from an `ssh://user@host/path` locator.
-/// Returns None for local paths.
 pub fn repo_host(path: &Path) -> Option<String> {
     crate::git::parse_ssh_repo(path).map(|(h, _)| h)
 }
@@ -221,5 +219,15 @@ mod tests {
         let json = r#"{"theme":"Catppuccin Mocha"}"#;
         let decoded: Preferences = serde_json::from_str(json).unwrap();
         assert_eq!(decoded.language, Language::English);
+    }
+
+    #[test]
+    fn test_repo_host() {
+        use std::path::Path;
+        assert_eq!(
+            repo_host(Path::new("ssh://user@host/repo")),
+            Some("user@host".to_string())
+        );
+        assert_eq!(repo_host(Path::new("/local/path")), None);
     }
 }
