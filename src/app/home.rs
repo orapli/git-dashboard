@@ -108,6 +108,49 @@ impl GitDashboardApp {
                         .desired_width(240.0),
                 );
 
+                // Host filter
+                {
+                    let distinct_hosts: Vec<String> = self
+                        .repositories
+                        .iter()
+                        .filter_map(|r| r.host.clone())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    if !distinct_hosts.is_empty() {
+                        ui.add_space(20.0);
+                        let all_label = crate::i18n::t(lang, "all_hosts");
+                        let selected_text = self
+                            .home_selected_host
+                            .as_deref()
+                            .unwrap_or(&all_label)
+                            .to_string();
+                        egui::ComboBox::from_id_salt("home_host_combobox")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                let label = crate::i18n::t(lang, "all_hosts");
+                                if ui
+                                    .selectable_label(self.home_selected_host.is_none(), &label)
+                                    .clicked()
+                                {
+                                    self.home_selected_host = None;
+                                }
+                                for host in &distinct_hosts {
+                                    if ui
+                                        .selectable_label(
+                                            self.home_selected_host.as_deref()
+                                                == Some(host.as_str()),
+                                            host,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.home_selected_host = Some(host.clone());
+                                    }
+                                }
+                            });
+                    }
+                }
+
                 ui.add_space(20.0);
 
                 ui.label(crate::i18n::t(lang, "sort_label"));
@@ -201,8 +244,11 @@ impl GitDashboardApp {
             // violated the per-frame-computation rule with many repos
             let cache_gen = self.repo_cache_gen;
             let items = match self.home_items_cache.take() {
-                Some((q, s, g, items))
-                    if q == self.repo_search_query && s == self.repo_sort_by && g == cache_gen =>
+                Some((q, h, s, g, items))
+                    if q == self.repo_search_query
+                        && h == self.home_selected_host
+                        && s == self.repo_sort_by
+                        && g == cache_gen =>
                 {
                     items
                 }
@@ -211,6 +257,10 @@ impl GitDashboardApp {
                         .repositories
                         .iter()
                         .enumerate()
+                        .filter(|(_, repo)| match &self.home_selected_host {
+                            None => true,
+                            Some(h) => repo.host.as_deref() == Some(h.as_str()),
+                        })
                         .map(|(idx, repo)| {
                             let (last_commit_date, language, framework) =
                                 if let Some(Ok(data)) = self.repo_cache.get(&idx) {
@@ -790,6 +840,7 @@ impl GitDashboardApp {
             // Put the (possibly rebuilt) list back for the next frame
             self.home_items_cache = Some((
                 self.repo_search_query.clone(),
+                self.home_selected_host.clone(),
                 self.repo_sort_by,
                 cache_gen,
                 items,

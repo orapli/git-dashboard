@@ -565,6 +565,8 @@ fn handle_job(job: Job, tx: &std::sync::mpsc::Sender<AsyncMessage>) {
     }
 }
 
+type HomeItemsCache = Option<(String, Option<String>, usize, u64, Vec<home::RepoFilterSortInput>)>;
+
 pub struct GitDashboardApp {
     // Application state data
     repositories: Vec<Repository>,
@@ -584,7 +586,7 @@ pub struct GitDashboardApp {
     // Bumped on every repo_cache / repositories mutation; keys the memoized
     // home list so it is not rebuilt (clone + sort) every frame
     repo_cache_gen: u64,
-    home_items_cache: Option<(String, usize, u64, Vec<home::RepoFilterSortInput>)>,
+    home_items_cache: HomeItemsCache,
     loading_repos: HashSet<usize>,
     // Repos already (re)analyzed this session: disk-cached repos refresh
     // lazily on first visit instead of all at once on startup
@@ -650,6 +652,8 @@ pub struct GitDashboardApp {
     repo_search_query: String,
     repo_sort_by: usize, // 0=name asc, 1=name desc, 2=last-updated newest, 3=last-updated oldest
     sidebar_search_query: String,
+    sidebar_selected_host: Option<String>,
+    home_selected_host: Option<String>,
 
     // Settings save feedback display (2 seconds)
     pub(crate) repo_added_at: Option<std::time::Instant>,
@@ -884,6 +888,8 @@ impl GitDashboardApp {
             repo_search_query: String::new(),
             repo_sort_by: 2,
             sidebar_search_query: String::new(),
+            sidebar_selected_host: None,
+            home_selected_host: None,
             repo_added_at: None,
             member_added_at: None,
             viewing_diff: false,
@@ -2038,6 +2044,60 @@ impl eframe::App for GitDashboardApp {
                                 });
                                 ui.add_space(3.0);
 
+                                // Host filter for sidebar repo list
+                                {
+                                    let mut distinct_hosts: Vec<String> = self
+                                        .repositories
+                                        .iter()
+                                        .filter_map(|r| r.host.clone())
+                                        .collect::<std::collections::BTreeSet<_>>()
+                                        .into_iter()
+                                        .collect();
+                                    distinct_hosts.sort();
+                                    if !distinct_hosts.is_empty() {
+                                        ui.horizontal(|ui| {
+                                            ui.add_space(SIDEBAR_PADDING);
+                                            let all_label =
+                                                crate::i18n::t(lang, "all_hosts");
+                                            let selected_text = self
+                                                .sidebar_selected_host
+                                                .as_deref()
+                                                .unwrap_or(&all_label)
+                                                .to_string();
+                                            egui::ComboBox::from_id_salt("sidebar_host_combobox")
+                                                .selected_text(selected_text)
+                                                .width(170.0)
+                                                .show_ui(ui, |ui| {
+                                                    let label = crate::i18n::t(lang, "all_hosts");
+                                                    if ui
+                                                        .selectable_label(
+                                                            self.sidebar_selected_host.is_none(),
+                                                            &label,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.sidebar_selected_host = None;
+                                                    }
+                                                    for host in &distinct_hosts {
+                                                        if ui
+                                                            .selectable_label(
+                                                                self.sidebar_selected_host
+                                                                    .as_deref()
+                                                                    == Some(host.as_str()),
+                                                                host,
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            self.sidebar_selected_host =
+                                                                Some(host.clone());
+                                                        }
+                                                    }
+                                                });
+                                        });
+                                        ui.add_space(4.0);
+                                    }
+                                }
+
                                 // Quick filter and sort cycle for sidebar repo list
                                 ui.horizontal(|ui| {
                                     ui.add_space(SIDEBAR_PADDING);
@@ -2072,6 +2132,12 @@ impl eframe::App for GitDashboardApp {
                                         .repositories
                                         .iter()
                                         .enumerate()
+                                        .filter(|(_, repo)| {
+                                            match &self.sidebar_selected_host {
+                                                None => true,
+                                                Some(h) => repo.host.as_deref() == Some(h.as_str()),
+                                            }
+                                        })
                                         .map(|(idx, repo)| {
                                             let last_commit_date =
                                                 if let Some(Ok(data)) = self.repo_cache.get(&idx) {
