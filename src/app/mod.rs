@@ -2046,19 +2046,31 @@ impl eframe::App for GitDashboardApp {
                                             .hint_text(crate::i18n::t(lang, "filter_placeholder"))
                                             .desired_width(158.0),
                                     );
-                                    let sort_tooltip = match self.repo_sort_by {
-                                        0 => crate::i18n::t(lang, "sort_name_asc"),
-                                        1 => crate::i18n::t(lang, "sort_name_desc"),
-                                        2 => crate::i18n::t(lang, "sort_updated_desc"),
-                                        _ => crate::i18n::t(lang, "sort_updated_asc"),
-                                    };
-                                    if ui
-                                        .add(egui::Button::new("⇅").small())
-                                        .on_hover_text(sort_tooltip)
-                                        .clicked()
-                                    {
-                                        self.repo_sort_by = (self.repo_sort_by + 1) % 4;
-                                    }
+                                    egui::ComboBox::from_id_salt("sidebar_sort_combobox")
+                                        .selected_text("⇅")
+                                        .width(28.0)
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.repo_sort_by,
+                                                0,
+                                                crate::i18n::t(lang, "sort_name_asc"),
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.repo_sort_by,
+                                                1,
+                                                crate::i18n::t(lang, "sort_name_desc"),
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.repo_sort_by,
+                                                2,
+                                                crate::i18n::t(lang, "sort_updated_desc"),
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.repo_sort_by,
+                                                3,
+                                                crate::i18n::t(lang, "sort_updated_asc"),
+                                            );
+                                        });
                                 });
                                 ui.add_space(8.0);
                             }
