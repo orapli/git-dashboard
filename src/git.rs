@@ -1,7 +1,9 @@
 use crate::config::{Language, Member};
 use chrono::{Datelike, Duration, Local, TimeZone, Timelike, Utc};
 use serde::Serialize;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -276,6 +278,107 @@ fn run_git_cmd(repo_path: &Path, args: &[&str]) -> Result<String, String> {
 /// output (arbitrary file content is never batched).
 const BATCH_SEP: &str = "___GITDASH_CMD_END_3f9a2c___";
 
+struct HostSession {
+    child: std::process::Child,
+    stdin: BufWriter<std::process::ChildStdin>,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for HostSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+thread_local! {
+    static SSH_SESSIONS: RefCell<HashMap<String, HostSession>> = RefCell::new(HashMap::new());
+}
+
+fn create_host_session(host: &str) -> Result<HostSession, String> {
+    use std::process::Stdio;
+    let mut ssh = quiet_command("ssh");
+    ssh.arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=8")
+        .arg("-o")
+        .arg("ServerAliveInterval=15")
+        .arg("-o")
+        .arg("ServerAliveCountMax=3")
+        .arg(host)
+        .arg("sh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = ssh
+        .spawn()
+        .map_err(|e| format!("SSH起動失敗: {e}"))?;
+    let stdin = BufWriter::new(
+        child.stdin.take().ok_or_else(|| "SSH stdin unavailable".to_string())?,
+    );
+    let stdout = BufReader::new(
+        child.stdout.take().ok_or_else(|| "SSH stdout unavailable".to_string())?,
+    );
+    Ok(HostSession { child, stdin, stdout })
+}
+
+/// Send commands one at a time over a live session, reading until the sentinel
+/// after each. Returns Err on any I/O failure so the caller can drop and retry.
+fn run_commands_on_session(
+    session: &mut HostSession,
+    qpath: &str,
+    commands: &[&[&str]],
+) -> Result<Vec<Result<String, String>>, String> {
+    let mut results = Vec::with_capacity(commands.len());
+    for cmd in commands {
+        let mut line = format!("git -C {qpath}");
+        for a in *cmd {
+            line.push(' ');
+            line.push_str(&shell_quote(a));
+        }
+        line.push_str(" 2>&1; printf '\\n%s%d\\n' '");
+        line.push_str(BATCH_SEP);
+        line.push_str("' \"$?\"\n");
+
+        session
+            .stdin
+            .write_all(line.as_bytes())
+            .map_err(|e| format!("SSH write: {e}"))?;
+        session
+            .stdin
+            .flush()
+            .map_err(|e| format!("SSH flush: {e}"))?;
+
+        let mut output = String::new();
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            let n = session
+                .stdout
+                .read_line(&mut buf)
+                .map_err(|e| format!("SSH read: {e}"))?;
+            if n == 0 {
+                return Err("SSH接続が閉じられました".to_string());
+            }
+            let trimmed = buf.trim_end_matches(['\n', '\r']);
+            if let Some(code_str) = trimmed.strip_prefix(BATCH_SEP) {
+                let code: i32 = code_str.trim().parse().unwrap_or(-1);
+                let content = output.trim_end_matches('\n').to_string();
+                if code == 0 {
+                    results.push(Ok(content));
+                } else {
+                    results.push(Err(content));
+                }
+                break;
+            } else {
+                output.push_str(&buf);
+            }
+        }
+    }
+    Ok(results)
+}
+
 /// Run several git commands against a repository, returning one result per
 /// command in order. For **SSH** repositories all commands share a single ssh
 /// connection: each `ssh` invocation is a full TCP + crypto handshake, and one
@@ -291,38 +394,37 @@ fn run_git_batch(repo_path: &Path, commands: &[&[&str]]) -> Vec<Result<String, S
         return commands.iter().map(|c| run_git_cmd(repo_path, c)).collect();
     };
 
-    // Remote shell script: each command's merged stdout+stderr, then a sentinel
-    // line carrying its exit code. printf's `\n` guarantees the sentinel starts
-    // on its own line even when a command's output has no trailing newline.
     let qpath = shell_quote(&remote_path);
-    let mut script = String::new();
-    for cmd in commands {
-        script.push_str("git -C ");
-        script.push_str(&qpath);
-        for a in *cmd {
-            script.push(' ');
-            script.push_str(&shell_quote(a));
-        }
-        script.push_str(" 2>&1; printf '\\n%s%d\\n' '");
-        script.push_str(BATCH_SEP);
-        script.push_str("' \"$?\"\n");
-    }
 
-    let mut ssh = quiet_command("ssh");
-    ssh.arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg("ConnectTimeout=8")
-        .arg(&host)
-        .arg(&script);
-
-    let timeout = (GIT_TIMEOUT * commands.len().max(1) as u32).min(GIT_NETWORK_TIMEOUT);
-    match run_with_timeout(ssh, timeout) {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            split_batch_output(&stdout, BATCH_SEP, commands.len(), stderr.trim())
+    // Reuse a long-lived SSH co-process per host (one per thread). On I/O
+    // failure drop the session and retry once on a fresh connection.
+    let result: Result<Vec<Result<String, String>>, String> = SSH_SESSIONS.with(|sessions| {
+        let mut map = sessions.borrow_mut();
+        for attempt in 0..2usize {
+            if !map.contains_key(&host) {
+                match create_host_session(&host) {
+                    Ok(s) => {
+                        map.insert(host.clone(), s);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            let session = map.get_mut(&host).unwrap();
+            match run_commands_on_session(session, &qpath, commands) {
+                Ok(results) => return Ok(results),
+                Err(_) => {
+                    map.remove(&host);
+                    if attempt >= 1 {
+                        return Err("SSH接続に失敗しました".to_string());
+                    }
+                }
+            }
         }
+        Err("SSH接続に失敗しました".to_string())
+    });
+
+    match result {
+        Ok(results) => results,
         Err(e) => commands.iter().map(|_| Err(e.clone())).collect(),
     }
 }
@@ -330,6 +432,7 @@ fn run_git_batch(repo_path: &Path, commands: &[&[&str]]) -> Vec<Result<String, S
 /// Split sentinel-delimited batch stdout into per-command results. Each command
 /// emitted its output followed by a line `<sep><exit-code>`. Segments missing
 /// their sentinel (e.g. the connection dropped mid-stream) become `Err`.
+#[cfg_attr(not(test), allow(dead_code))]
 fn split_batch_output(
     stdout: &str,
     sep: &str,
