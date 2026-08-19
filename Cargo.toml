@@ -8,6 +8,18 @@ homepage = "https://github.com/orapli/git-dashboard"
 repository = "https://github.com/orapli/git-dashboard"
 license = "MIT"
 
+[lib]
+name = "git_dashboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "git-dashboard"
+path = "src/main.rs"
+
+[[bin]]
+name = "git-dashboard-tui"
+path = "src/bin/git-dashboard-tui.rs"
+
 [dependencies]
 eframe = { version = "0.35", features = ["persistence"] }
 egui = "0.35"
@@ -20,6 +32,8 @@ rfd = "0.14"
 rust-i18n = "3"
 # better_syntax_highlighting: syntax coloring for README code blocks (syntect-based)
 egui_commonmark = { version = "0.24", features = ["better_syntax_highlighting"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 [build-dependencies]
 winresource = "0.1"
