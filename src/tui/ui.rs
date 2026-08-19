@@ -549,12 +549,23 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
     let Some(diff) = app.diff.as_ref() else {
         return;
     };
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
-        .split(area);
+    let has_hunks = !diff.hunks.is_empty();
+    let split = if has_hunks {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(26),
+                Constraint::Percentage(24),
+                Constraint::Percentage(50),
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
+            .split(area)
+    };
 
-    let file_focus = app.focus == FocusPane::List;
     let file_items: Vec<ListItem> = diff
         .files
         .iter()
@@ -564,7 +575,11 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         .collect();
     let file_title = format!(
         "{} {} ({})",
-        if file_focus { "▸" } else { " " },
+        if app.focus == FocusPane::List {
+            "▸"
+        } else {
+            " "
+        },
         app.t("changed_files_header"),
         diff.files.len()
     );
@@ -580,11 +595,47 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         no_changes.trim(),
     );
 
+    let content_area = if has_hunks {
+        let hunk_items: Vec<ListItem> = diff
+            .hunks
+            .iter()
+            .map(|h| ListItem::new(h.label.clone()))
+            .collect();
+        let hunk_title = format!(
+            "{} hunks ({}/{})",
+            if app.focus == FocusPane::Hunks {
+                "▸"
+            } else {
+                " "
+            },
+            if diff.hunks.is_empty() {
+                0
+            } else {
+                diff.hunk_idx + 1
+            },
+            diff.hunks.len()
+        );
+        render_items(
+            frame,
+            split[1],
+            pal,
+            hunk_items,
+            diff.hunk_idx,
+            hunk_title,
+            None,
+            &app.tt("No hunks.", "hunk なし"),
+        );
+        split[2]
+    } else {
+        split[1]
+    };
+
     let content_border = if app.focus == FocusPane::Content {
         Style::default().fg(pal.accent)
     } else {
         Style::default().fg(pal.border)
     };
+    let hunk_range = diff.hunks.get(diff.hunk_idx).map(|h| (h.start, h.end));
     let body: Vec<Line> = if let Some(err) = &diff.error {
         vec![Line::styled(err.clone(), Style::default().fg(pal.red))]
     } else if diff.loading {
@@ -605,19 +656,32 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         };
         diff.lines
             .iter()
+            .enumerate()
             .skip(start)
-            .map(|l| {
-                let style = match l.kind {
+            .map(|(idx, l)| {
+                let mut style = match l.kind {
                     DiffRowKind::Added => Style::default().fg(pal.green),
                     DiffRowKind::Removed => Style::default().fg(pal.red),
                     DiffRowKind::Modified => Style::default().fg(pal.yellow),
                     DiffRowKind::Context => Style::default().fg(pal.text),
                 };
+                if let Some((hs, he)) = hunk_range
+                    && idx >= hs
+                    && idx < he
+                {
+                    style = style.bg(pal.overlay);
+                }
                 Line::styled(l.text.clone(), style)
             })
             .collect()
     };
-    let header = diff.header.as_deref().unwrap_or("").lines().next().unwrap_or("");
+    let header = diff
+        .header
+        .as_deref()
+        .unwrap_or("")
+        .lines()
+        .next()
+        .unwrap_or("");
     let title = format!(
         "{} {}  {}",
         if app.focus == FocusPane::Content {
@@ -636,7 +700,7 @@ fn draw_diff(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
                 .border_style(content_border)
                 .title_style(Style::default().fg(pal.accent)),
         ),
-        split[1],
+        content_area,
     );
 }
 
@@ -746,7 +810,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
             app.t("diff"),
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         )),
-        Line::from("  Tab / h l      files ↔ diff     n / p  next/prev hunk"),
+        Line::from("  Tab / h l      files ↔ hunks ↔ diff"),
+        Line::from("  n / p          next/prev hunk (wraps; highlights current)"),
+        Line::from("  [ / ]          previous/next changed file"),
     ];
     frame.render_widget(
         Paragraph::new(lines).block(

@@ -75,7 +75,28 @@ impl RepoTab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FocusPane {
     List,
+    Hunks,
     Content,
+}
+
+impl FocusPane {
+    fn next(self, has_hunks: bool) -> Self {
+        match (self, has_hunks) {
+            (Self::List, true) => Self::Hunks,
+            (Self::List, false) => Self::Content,
+            (Self::Hunks, _) => Self::Content,
+            (Self::Content, _) => Self::List,
+        }
+    }
+
+    fn prev(self, has_hunks: bool) -> Self {
+        match (self, has_hunks) {
+            (Self::List, _) => Self::Content,
+            (Self::Hunks, _) => Self::List,
+            (Self::Content, true) => Self::Hunks,
+            (Self::Content, false) => Self::List,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +134,26 @@ pub struct LogView {
 pub struct DiffLine {
     pub kind: DiffRowKind,
     pub text: String,
+    pub old_no: Option<usize>,
+    pub new_no: Option<usize>,
+}
+
+impl Default for DiffLine {
+    fn default() -> Self {
+        Self {
+            kind: DiffRowKind::Context,
+            text: String::new(),
+            old_no: None,
+            new_no: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hunk {
+    pub start: usize,
+    pub end: usize,
+    pub label: String,
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +165,8 @@ pub struct DiffView {
     pub files: Vec<ChangedFile>,
     pub file_idx: usize,
     pub lines: Vec<DiffLine>,
+    pub hunks: Vec<Hunk>,
+    pub hunk_idx: usize,
     pub scroll: usize,
     pub loading: bool,
     pub header: Option<String>,
@@ -409,10 +452,23 @@ impl App {
                     "1-5 タブ  enter diff  a 適用  d 削除  r 再読込  esc 戻る  q 終了",
                 ),
             },
-            Screen::Diff => self.tt(
-                "tab/h/l panes  j/k  n/p hunk  enter load file  esc back  q quit",
-                "tab/h/l ペイン  j/k  n/p hunk  enter ファイル  esc 戻る  q 終了",
-            ),
+            Screen::Diff => {
+                let hunk = self
+                    .diff
+                    .as_ref()
+                    .map(|d| {
+                        if d.hunks.is_empty() {
+                            "hunk 0/0".to_string()
+                        } else {
+                            format!("hunk {}/{}", d.hunk_idx + 1, d.hunks.len())
+                        }
+                    })
+                    .unwrap_or_default();
+                self.tt(
+                    &format!("{hunk}  n/p hunk  tab files/hunks/diff  [ ] file  esc back  q quit"),
+                    &format!("{hunk}  n/p hunk  tab ファイル/hunk/diff  [ ] ファイル  esc 戻る  q 終了"),
+                )
+            }
             Screen::Settings => self.tt(
                 "j/k  a add  d delete  l language  esc back  q quit",
                 "j/k  a 追加  d 削除  l 言語  esc 戻る  q 終了",
@@ -683,32 +739,35 @@ impl App {
     }
 
     fn handle_diff(&mut self, key: KeyEvent) {
+        let has_hunks = self
+            .diff
+            .as_ref()
+            .is_some_and(|d| !d.hunks.is_empty());
         match key.code {
             KeyCode::Esc | KeyCode::Backspace => {
                 self.diff = None;
                 self.screen = Screen::Repo;
                 self.focus = FocusPane::List;
             }
-            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if self.focus == FocusPane::List => {
-                self.focus = FocusPane::Content;
+            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+                self.focus = self.focus.next(has_hunks);
             }
-            KeyCode::Char('h') | KeyCode::Left if self.focus == FocusPane::Content => {
-                self.focus = FocusPane::List;
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.focus = self.focus.prev(has_hunks);
             }
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    FocusPane::List => FocusPane::Content,
-                    FocusPane::Content => FocusPane::List,
-                };
-            }
+            KeyCode::Char('[') => self.diff_change_file(-1),
+            KeyCode::Char(']') => self.diff_change_file(1),
             KeyCode::Down | KeyCode::Char('j') => self.diff_move(1),
             KeyCode::Up | KeyCode::Char('k') => self.diff_move(-1),
             KeyCode::PageDown => self.diff_move(20),
             KeyCode::Char(' ') if self.focus == FocusPane::Content => self.diff_move(20),
             KeyCode::PageUp => self.diff_move(-20),
+            KeyCode::Char('g') => self.diff_home_end(true),
+            KeyCode::Char('G') => self.diff_home_end(false),
             KeyCode::Char('n') => self.next_hunk(1),
             KeyCode::Char('N') | KeyCode::Char('p') => self.next_hunk(-1),
             KeyCode::Enter if self.focus == FocusPane::List => self.load_selected_diff_file(),
+            KeyCode::Enter if self.focus == FocusPane::Hunks => self.jump_current_hunk(),
             _ => {}
         }
     }
@@ -789,13 +848,24 @@ impl App {
             let Some(diff) = self.diff.as_mut() else {
                 return;
             };
-            if self.focus == FocusPane::List {
-                let old = diff.file_idx;
-                diff.file_idx = move_index(diff.file_idx, diff.files.len(), delta);
-                load = diff.file_idx != old;
-            } else {
-                let max = diff.lines.len().saturating_sub(1);
-                diff.scroll = (diff.scroll as isize + delta).clamp(0, max as isize) as usize;
+            match self.focus {
+                FocusPane::List => {
+                    let old = diff.file_idx;
+                    diff.file_idx = move_index(diff.file_idx, diff.files.len(), delta);
+                    load = diff.file_idx != old;
+                }
+                FocusPane::Hunks => {
+                    if diff.hunks.is_empty() {
+                        return;
+                    }
+                    diff.hunk_idx = move_index(diff.hunk_idx, diff.hunks.len(), delta);
+                    diff.scroll = diff.hunks[diff.hunk_idx].start;
+                }
+                FocusPane::Content => {
+                    let max = diff.lines.len().saturating_sub(1);
+                    diff.scroll = (diff.scroll as isize + delta).clamp(0, max as isize) as usize;
+                    sync_hunk_from_scroll(diff);
+                }
             }
         }
         if load {
@@ -803,28 +873,74 @@ impl App {
         }
     }
 
+    fn diff_change_file(&mut self, delta: isize) {
+        let changed = {
+            let Some(diff) = self.diff.as_mut() else {
+                return;
+            };
+            let old = diff.file_idx;
+            diff.file_idx = move_index(diff.file_idx, diff.files.len(), delta);
+            diff.file_idx != old
+        };
+        if changed {
+            self.load_selected_diff_file();
+        }
+    }
+
+    fn diff_home_end(&mut self, home: bool) {
+        let mut load = false;
+        {
+            let Some(diff) = self.diff.as_mut() else {
+                return;
+            };
+            match self.focus {
+                FocusPane::List => {
+                    diff.file_idx = if home {
+                        0
+                    } else {
+                        diff.files.len().saturating_sub(1)
+                    };
+                    load = true;
+                }
+                FocusPane::Hunks | FocusPane::Content => {
+                    if diff.hunks.is_empty() {
+                        diff.scroll = if home {
+                            0
+                        } else {
+                            diff.lines.len().saturating_sub(1)
+                        };
+                    } else {
+                        diff.hunk_idx = if home { 0 } else { diff.hunks.len() - 1 };
+                        diff.scroll = diff.hunks[diff.hunk_idx].start;
+                    }
+                }
+            }
+        }
+        if load {
+            self.load_selected_diff_file();
+        }
+    }
+
+    fn jump_current_hunk(&mut self) {
+        let Some(diff) = self.diff.as_mut() else {
+            return;
+        };
+        if let Some(h) = diff.hunks.get(diff.hunk_idx) {
+            diff.scroll = h.start;
+        }
+    }
+
     fn next_hunk(&mut self, dir: isize) {
         let Some(diff) = self.diff.as_mut() else {
             return;
         };
-        self.focus = FocusPane::Content;
-        let len = diff.lines.len();
-        if len == 0 {
+        let n = diff.hunks.len();
+        if n == 0 {
             return;
         }
-        let start = diff.scroll;
-        let mut i = start as isize;
-        loop {
-            i += dir;
-            if i < 0 || i >= len as isize {
-                break;
-            }
-            let u = i as usize;
-            if is_hunk_start(&diff.lines, u) {
-                diff.scroll = u;
-                break;
-            }
-        }
+        let next = (diff.hunk_idx as isize + dir).rem_euclid(n as isize) as usize;
+        diff.hunk_idx = next;
+        diff.scroll = diff.hunks[next].start;
     }
 
     fn refresh_home(&mut self) {
@@ -970,6 +1086,8 @@ impl App {
             files: Vec::new(),
             file_idx: 0,
             lines: Vec::new(),
+            hunks: Vec::new(),
+            hunk_idx: 0,
             scroll: 0,
             loading: true,
             header: None,
@@ -1006,6 +1124,8 @@ impl App {
             files: Vec::new(),
             file_idx: 0,
             lines: Vec::new(),
+            hunks: Vec::new(),
+            hunk_idx: 0,
             scroll: 0,
             loading: true,
             header: None,
@@ -1036,6 +1156,8 @@ impl App {
         let Some(file) = diff.files.get(diff.file_idx) else {
             diff.loading = false;
             diff.lines.clear();
+            diff.hunks.clear();
+            diff.hunk_idx = 0;
             return;
         };
         self.diff_seq += 1;
@@ -1297,8 +1419,14 @@ impl App {
                     Ok(fd) => {
                         diff.error = None;
                         diff.lines = flatten_diff(&fd);
+                        apply_hunks(diff);
                     }
-                    Err(e) => diff.error = Some(e),
+                    Err(e) => {
+                        diff.error = Some(e);
+                        diff.lines.clear();
+                        diff.hunks.clear();
+                        diff.hunk_idx = 0;
+                    }
                 }
             }
             Msg::CommitMeta { seq, header, files } => {
@@ -1414,14 +1542,69 @@ fn move_index(current: usize, len: usize, delta: isize) -> usize {
     next.clamp(0, (len - 1) as isize) as usize
 }
 
+fn is_change_kind(k: &DiffRowKind) -> bool {
+    matches!(
+        k,
+        DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Modified
+    )
+}
+
 fn is_hunk_start(lines: &[DiffLine], i: usize) -> bool {
-    let is_change = |k: &DiffRowKind| {
-        matches!(
-            k,
-            DiffRowKind::Added | DiffRowKind::Removed | DiffRowKind::Modified
-        )
-    };
-    is_change(&lines[i].kind) && (i == 0 || !is_change(&lines[i - 1].kind))
+    is_change_kind(&lines[i].kind) && (i == 0 || !is_change_kind(&lines[i - 1].kind))
+}
+
+fn collect_hunks(lines: &[DiffLine]) -> Vec<Hunk> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_hunk_start(lines, i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < lines.len() && is_change_kind(&lines[i].kind) {
+            i += 1;
+        }
+        let end = i;
+        let preview = lines[start]
+            .text
+            .trim()
+            .trim_start_matches(['+', '-', ' '])
+            .chars()
+            .take(36)
+            .collect::<String>();
+        let line_no = lines[start]
+            .new_no
+            .or(lines[start].old_no)
+            .unwrap_or(0);
+        out.push(Hunk {
+            start,
+            end,
+            label: format!("#{:<3} L{:<5} {preview}", out.len() + 1, line_no),
+        });
+    }
+    out
+}
+
+fn apply_hunks(diff: &mut DiffView) {
+    diff.hunks = collect_hunks(&diff.lines);
+    diff.hunk_idx = 0;
+    if let Some(h) = diff.hunks.first() {
+        diff.scroll = h.start;
+    } else {
+        diff.scroll = 0;
+    }
+}
+
+fn sync_hunk_from_scroll(diff: &mut DiffView) {
+    if let Some(i) = diff
+        .hunks
+        .iter()
+        .rposition(|h| h.start <= diff.scroll)
+    {
+        diff.hunk_idx = i;
+    }
 }
 
 fn flatten_diff(diff: &FileDiff) -> Vec<DiffLine> {
@@ -1429,6 +1612,8 @@ fn flatten_diff(diff: &FileDiff) -> Vec<DiffLine> {
         return vec![DiffLine {
             kind: DiffRowKind::Context,
             text: "Binary file".to_string(),
+            old_no: None,
+            new_no: None,
         }];
     }
     let mut out = Vec::new();
@@ -1443,18 +1628,24 @@ fn flatten_diff(diff: &FileDiff) -> Vec<DiffLine> {
                 out.push(DiffLine {
                     kind: DiffRowKind::Context,
                     text: format!(" {t}"),
+                    old_no: row.left_no,
+                    new_no: row.right_no,
                 });
             }
             DiffRowKind::Removed => {
                 out.push(DiffLine {
                     kind: DiffRowKind::Removed,
                     text: format!("-{}", row.left_text.as_deref().unwrap_or("")),
+                    old_no: row.left_no,
+                    new_no: None,
                 });
             }
             DiffRowKind::Added => {
                 out.push(DiffLine {
                     kind: DiffRowKind::Added,
                     text: format!("+{}", row.right_text.as_deref().unwrap_or("")),
+                    old_no: None,
+                    new_no: row.right_no,
                 });
             }
             DiffRowKind::Modified => {
@@ -1462,12 +1653,16 @@ fn flatten_diff(diff: &FileDiff) -> Vec<DiffLine> {
                     out.push(DiffLine {
                         kind: DiffRowKind::Removed,
                         text: format!("-{t}"),
+                        old_no: row.left_no,
+                        new_no: None,
                     });
                 }
                 if let Some(t) = &row.right_text {
                     out.push(DiffLine {
                         kind: DiffRowKind::Added,
                         text: format!("+{t}"),
+                        old_no: None,
+                        new_no: row.right_no,
                     });
                 }
             }
@@ -1477,6 +1672,8 @@ fn flatten_diff(diff: &FileDiff) -> Vec<DiffLine> {
         out.push(DiffLine {
             kind: DiffRowKind::Context,
             text: "… truncated".to_string(),
+            old_no: None,
+            new_no: None,
         });
     }
     out
@@ -1742,28 +1939,140 @@ mod tests {
             DiffLine {
                 kind: DiffRowKind::Context,
                 text: " a".into(),
+                old_no: Some(1),
+                new_no: Some(1),
             },
             DiffLine {
                 kind: DiffRowKind::Removed,
                 text: "-b".into(),
+                old_no: Some(2),
+                new_no: None,
             },
             DiffLine {
                 kind: DiffRowKind::Added,
                 text: "+c".into(),
+                old_no: None,
+                new_no: Some(2),
             },
             DiffLine {
                 kind: DiffRowKind::Context,
                 text: " d".into(),
+                old_no: Some(3),
+                new_no: Some(3),
             },
             DiffLine {
                 kind: DiffRowKind::Added,
                 text: "+e".into(),
+                old_no: None,
+                new_no: Some(4),
             },
         ];
         assert!(!is_hunk_start(&lines, 0));
         assert!(is_hunk_start(&lines, 1));
         assert!(!is_hunk_start(&lines, 2));
         assert!(is_hunk_start(&lines, 4));
+        let hunks = collect_hunks(&lines);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].start, 1);
+        assert_eq!(hunks[0].end, 3);
+        assert_eq!(hunks[1].start, 4);
+        assert_eq!(hunks[1].end, 5);
+        assert!(hunks[0].label.contains("L2"));
+    }
+
+    #[test]
+    fn next_hunk_wraps_and_syncs_scroll() {
+        let mut app = App::new();
+        app.screen = Screen::Diff;
+        app.diff = Some(DiffView {
+            title: "t".into(),
+            target: "abc".into(),
+            base: None,
+            three_dot: false,
+            files: vec![],
+            file_idx: 0,
+            lines: vec![
+                DiffLine {
+                    kind: DiffRowKind::Context,
+                    text: " a".into(),
+                    old_no: Some(1),
+                    new_no: Some(1),
+                },
+                DiffLine {
+                    kind: DiffRowKind::Added,
+                    text: "+b".into(),
+                    old_no: None,
+                    new_no: Some(2),
+                },
+                DiffLine {
+                    kind: DiffRowKind::Context,
+                    text: " c".into(),
+                    old_no: Some(3),
+                    new_no: Some(3),
+                },
+                DiffLine {
+                    kind: DiffRowKind::Removed,
+                    text: "-d".into(),
+                    old_no: Some(4),
+                    new_no: None,
+                },
+            ],
+            hunks: vec![],
+            hunk_idx: 0,
+            scroll: 0,
+            loading: false,
+            header: None,
+            error: None,
+        });
+        if let Some(d) = app.diff.as_mut() {
+            apply_hunks(d);
+        }
+        assert_eq!(app.diff.as_ref().unwrap().hunks.len(), 2);
+        assert_eq!(app.diff.as_ref().unwrap().hunk_idx, 0);
+        assert_eq!(app.diff.as_ref().unwrap().scroll, 1);
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(app.diff.as_ref().unwrap().hunk_idx, 1);
+        assert_eq!(app.diff.as_ref().unwrap().scroll, 3);
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(app.diff.as_ref().unwrap().hunk_idx, 0);
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert_eq!(app.diff.as_ref().unwrap().hunk_idx, 1);
+    }
+
+    #[test]
+    fn scrolling_diff_updates_hunk_selection() {
+        let mut d = DiffView {
+            title: "t".into(),
+            target: "abc".into(),
+            base: None,
+            three_dot: false,
+            files: vec![],
+            file_idx: 0,
+            lines: vec![],
+            hunks: vec![
+                Hunk {
+                    start: 0,
+                    end: 2,
+                    label: "#1".into(),
+                },
+                Hunk {
+                    start: 5,
+                    end: 8,
+                    label: "#2".into(),
+                },
+            ],
+            hunk_idx: 0,
+            scroll: 0,
+            loading: false,
+            header: None,
+            error: None,
+        };
+        d.scroll = 6;
+        sync_hunk_from_scroll(&mut d);
+        assert_eq!(d.hunk_idx, 1);
+        d.scroll = 1;
+        sync_hunk_from_scroll(&mut d);
+        assert_eq!(d.hunk_idx, 0);
     }
 
     #[test]
