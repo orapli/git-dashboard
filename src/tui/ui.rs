@@ -926,6 +926,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         Line::from("  i         always open builtin TUI diff"),
         Line::from("  o / e     sort repos / rename alias"),
         Line::from("  c         set external diff (empty = builtin, e.g. hunk)"),
+        Line::from("             commit compare is one arg: aaaa..bbbb  (space = files)"),
         Line::from("  r         reload without leaving the tab"),
         Line::from(""),
         Line::from(Span::styled(

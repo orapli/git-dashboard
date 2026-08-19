@@ -448,8 +448,8 @@ impl App {
             ),
             Some(InputKind::Rename) => self.tt("Rename alias", "別名を変更"),
             Some(InputKind::DiffCommand) => self.tt(
-                "Diff tool (empty = builtin, e.g. hunk)",
-                "Diff ツール (空 = 内蔵, 例: hunk)",
+                "Diff tool (empty = builtin, e.g. hunk). Ranges use hash..hash",
+                "Diff ツール (空 = 内蔵, 例: hunk). 範囲は hash..hash",
             ),
             _ => String::new(),
         }
@@ -2293,12 +2293,9 @@ fn resolve_diff_command(
         if let Some(b) = base {
             return Ok(ExternalDiff {
                 program: first.to_string(),
-                args: vec!["pager".into()],
+                args: vec!["show".into(), format!("{b}..{target}")],
                 cwd: repo.to_path_buf(),
-                pipe_git_diff: Some(vec![
-                    "diff".into(),
-                    format!("{b}...{target}"),
-                ]),
+                pipe_git_diff: None,
             });
         }
         return Ok(ExternalDiff {
@@ -2308,14 +2305,22 @@ fn resolve_diff_command(
             pipe_git_diff: None,
         });
     }
+    let spec = if target == "WORKING_TREE" {
+        String::new()
+    } else {
+        target.to_string()
+    };
+    let range = match base {
+        Some(b) if !spec.is_empty() => format!("{b}..{spec}"),
+        _ => spec.clone(),
+    };
     let expanded = t
         .replace("{path}", &repo.display().to_string())
         .replace("{repo}", &repo.display().to_string())
+        .replace("{range}", &range)
+        .replace("{base} {target}", &range)
         .replace("{base}", base.unwrap_or(""))
-        .replace(
-            "{target}",
-            if target == "WORKING_TREE" { "" } else { target },
-        )
+        .replace("{target}", &spec)
         .replace("{file}", "");
     let mut parts = expanded.split_whitespace();
     let program = parts
@@ -2729,8 +2734,11 @@ mod tests {
         let show = resolve_diff_command("hunk", &repo, None, "abc123").unwrap();
         assert_eq!(show.args, vec!["show", "abc123"]);
         let range = resolve_diff_command("hunk", &repo, Some("aaa"), "bbb").unwrap();
-        assert_eq!(range.args, vec!["pager"]);
-        assert!(range.pipe_git_diff.is_some());
+        assert_eq!(range.args, vec!["show", "aaa..bbb"]);
+        assert!(range.pipe_git_diff.is_none());
+        let templated =
+            resolve_diff_command("hunk show {base} {target}", &repo, Some("aaa"), "bbb").unwrap();
+        assert_eq!(templated.args, vec!["show", "aaa..bbb"]);
         assert!(resolve_diff_command("", &repo, None, "abc").is_err());
     }
 }
