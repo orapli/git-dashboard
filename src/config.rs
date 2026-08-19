@@ -62,6 +62,13 @@ pub fn repo_cache_path(repo_path: &Path) -> PathBuf {
     cache_dir().join(format!("repo-{:016x}.json", h.finish()))
 }
 
+pub fn tui_cache_path(repo_path: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    repo_path.hash(&mut h);
+    cache_dir().join(format!("tui-{:016x}.json", h.finish()))
+}
+
 pub fn load_repositories() -> Vec<Repository> {
     let config_dir = get_config_dir();
     let path = config_dir.join("config.json");
@@ -150,6 +157,17 @@ pub struct Preferences {
     pub diff_show_blame: bool,
     // Recent range comparisons (capped per repo and overall)
     pub recent_compares: Vec<RecentCompare>,
+    /// External diff tool. Empty = TUI builtin. `{path}` `{base}` `{target}` `{file}`
+    /// expand; a bare `hunk` / `hunkdiff` uses `hunk show` / `hunk diff`.
+    #[serde(default)]
+    pub diff_command: String,
+    /// 0=name asc, 1=name desc, 2=updated desc, 3=updated asc
+    #[serde(default = "default_repo_sort")]
+    pub repo_sort: usize,
+}
+
+fn default_repo_sort() -> usize {
+    2
 }
 
 impl Default for Preferences {
@@ -164,6 +182,8 @@ impl Default for Preferences {
             diff_full_file: false,
             diff_show_blame: false,
             recent_compares: Vec::new(),
+            diff_command: String::new(),
+            repo_sort: 2,
         }
     }
 }
@@ -213,5 +233,7 @@ mod tests {
         let json = r#"{"theme":"Catppuccin Mocha"}"#;
         let decoded: Preferences = serde_json::from_str(json).unwrap();
         assert_eq!(decoded.language, Language::English);
+        assert!(decoded.diff_command.is_empty());
+        assert_eq!(decoded.repo_sort, 2);
     }
 }

@@ -38,16 +38,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, app, chunks[2], pal);
 
     if app.is_adding_repo() {
-        draw_prompt(
-            frame,
-            area,
-            &app.tt(
-                "Add repository  (~/path or /abs/path)",
-                "リポジトリ追加  (~/path または 絶対パス)",
-            ),
-            app.input_buf(),
-            pal,
-        );
+        draw_prompt(frame, area, &app.prompt_title(), app.input_buf(), pal);
     }
     if let Some(msg) = app.confirm_message() {
         draw_prompt(frame, area, &msg, "", pal);
@@ -198,10 +189,11 @@ fn draw_home(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         )
     } else {
         format!(
-            "{} ({}/{}){filter}",
+            "{} ({}/{}) {}{filter}",
             app.t("repositories"),
             indices.len(),
-            app.repos.len()
+            app.repos.len(),
+            app.sort_label()
         )
     };
 
@@ -251,6 +243,7 @@ fn draw_repo(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
                 RepoTab::Branches => format!("3 {}", app.t("tab_branches")),
                 RepoTab::Tags => app.tt("4 Tags", "4 タグ"),
                 RepoTab::Stash => format!("5 {}", app.tt("Stash", "Stash")),
+                RepoTab::Contributors => app.tt("6 People", "6 貢献者"),
             };
             Line::from(s)
         })
@@ -297,6 +290,7 @@ fn draw_repo(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         RepoTab::Branches => draw_branches(frame, app, chunks[1], pal),
         RepoTab::Tags => draw_tags(frame, app, chunks[1], pal),
         RepoTab::Stash => draw_stash(frame, app, chunks[1], pal),
+        RepoTab::Contributors => draw_contributors(frame, app, chunks[1], pal),
     }
 }
 
@@ -412,13 +406,24 @@ fn draw_commits(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
     let Some(data) = app.repo_data.as_ref() else {
         return;
     };
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
     let vis = app.visible_indices();
     let items: Vec<ListItem> = vis
         .iter()
         .map(|&i| {
             let c = &data.commits[i];
+            let mark = if app.commit_base.as_deref() == Some(c.hash.as_str()) {
+                "B"
+            } else if app.commit_target.as_deref() == Some(c.hash.as_str()) {
+                "T"
+            } else {
+                " "
+            };
             ListItem::new(format!(
-                "{}  {}  {:<16}  {}",
+                "[{mark}] {}  {}  {:<16}  {}",
                 c.hash,
                 c.date,
                 truncate(&c.author, 16),
@@ -426,11 +431,120 @@ fn draw_commits(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
             ))
         })
         .collect();
+    let title = match (&app.commit_base, &app.commit_target) {
+        (Some(b), Some(t)) => format!("Commits  {b}...{t}  (enter to compare)"),
+        (Some(b), None) => format!("Commits  base={b}  (space to pick target)"),
+        _ => format!(
+            "{} ({}/{})",
+            app.tt("Commits", "コミット"),
+            vis.len(),
+            data.commits.len()
+        ),
+    };
+    render_items(
+        frame,
+        split[0],
+        pal,
+        items,
+        app.list_selected,
+        title,
+        app.list_error(),
+        &app.tt("No commits to show.", "表示するコミットがありません。"),
+    );
+
+    let mut preview_lines: Vec<Line> = Vec::new();
+    if let Some(sel) = vis.get(app.list_selected).and_then(|&i| data.commits.get(i)) {
+        preview_lines.push(Line::from(vec![
+            Span::styled(sel.hash.clone(), Style::default().fg(pal.accent)),
+            Span::raw("  "),
+            Span::styled(sel.author.clone(), Style::default().fg(pal.subtext)),
+            Span::raw("  "),
+            Span::raw(sel.date.clone()),
+        ]));
+        preview_lines.push(Line::from(sel.message.clone()));
+    }
+    if let Some(p) = &app.commit_preview {
+        preview_lines.push(Line::from(""));
+        for row in p.header.lines().take(8) {
+            preview_lines.push(Line::styled(
+                row.to_string(),
+                Style::default().fg(pal.subtext),
+            ));
+        }
+        if !p.files.is_empty() {
+            preview_lines.push(Line::from(""));
+            for f in p.files.iter().take(12) {
+                preview_lines.push(Line::from(format!(
+                    "[{}] {:+}/-{}  {}",
+                    f.status, f.additions, f.deletions, f.path
+                )));
+            }
+            if p.files.len() > 12 {
+                preview_lines.push(Line::styled(
+                    format!("… {} more", p.files.len() - 12),
+                    Style::default().fg(pal.muted),
+                ));
+            }
+        }
+    }
+    if preview_lines.is_empty() {
+        preview_lines.push(Line::styled(
+            app.tt("Select a commit.", "コミットを選択。"),
+            Style::default().fg(pal.muted),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(preview_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(app.tt("Commit", "コミット内容"))
+                .border_style(Style::default().fg(pal.border))
+                .title_style(Style::default().fg(pal.accent)),
+        ),
+        split[1],
+    );
+}
+
+fn draw_contributors(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
+    let Some(data) = app.repo_data.as_ref() else {
+        return;
+    };
+    let vis = app.visible_indices();
+    let items: Vec<ListItem> = vis
+        .iter()
+        .map(|&i| {
+            let c = &data.contributors[i];
+            let flag = if c.is_member && c.is_active {
+                "active"
+            } else if c.is_member {
+                "member"
+            } else {
+                "      "
+            };
+            ListItem::new(format!(
+                "{flag}  {:>5}  {:<22}  last {}  {}",
+                c.commit_count,
+                truncate(&c.name, 22),
+                c.last_commit,
+                c.email
+            ))
+            .style(if c.is_member && c.is_active {
+                Style::default().fg(pal.green)
+            } else {
+                Style::default()
+            })
+        })
+        .collect();
     let title = format!(
-        "{} ({}/{})",
-        app.tt("Commits", "コミット"),
+        "{} ({}/{}) {}",
+        app.tt("Contributors", "貢献者"),
         vis.len(),
-        data.commits.len()
+        data.contributors.len(),
+        if app.active_only {
+            app.tt("[active members]", "[メンテ中]")
+        } else {
+            String::new()
+        }
     );
     render_items(
         frame,
@@ -440,7 +554,7 @@ fn draw_commits(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
         app.list_selected,
         title,
         app.list_error(),
-        &app.tt("No commits to show.", "表示するコミットがありません。"),
+        &app.tt("No contributors.", "貢献者がいません。"),
     );
 }
 
@@ -717,6 +831,11 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
             Span::styled("  (l)", Style::default().fg(pal.muted)),
         ]),
         Line::from(vec![
+            Span::styled("Diff  ", Style::default().fg(pal.muted)),
+            Span::styled(app.diff_tool_label(), Style::default().fg(pal.accent)),
+            Span::styled("  (c)", Style::default().fg(pal.muted)),
+        ]),
+        Line::from(vec![
             Span::styled(
                 app.t("config_file_location"),
                 Style::default().fg(pal.muted),
@@ -728,7 +847,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
     ];
     let split = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .constraints([Constraint::Length(6), Constraint::Min(1)])
         .split(area);
     frame.render_widget(
         Paragraph::new(header).block(
@@ -801,9 +920,12 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect, pal: Palette) {
             app.tt("Repository", "リポジトリ"),
             Style::default().fg(pal.accent).add_modifier(Modifier::BOLD),
         )),
-        Line::from("  1 Status  2 Commits  3 Branches  4 Tags  5 Stash"),
+        Line::from("  1 Status  2 Commits  3 Branches  4 Tags  5 Stash  6 People"),
         Line::from("  enter     commit/file/stash diff, or branch log"),
-        Line::from("  space     mark tag base/target, then enter to compare"),
+        Line::from("  space     mark commit/tag base+target, then enter to compare"),
+        Line::from("  i         always open builtin TUI diff"),
+        Line::from("  o / e     sort repos / rename alias"),
+        Line::from("  c         set external diff (empty = builtin, e.g. hunk)"),
         Line::from("  r         reload without leaving the tab"),
         Line::from(""),
         Line::from(Span::styled(

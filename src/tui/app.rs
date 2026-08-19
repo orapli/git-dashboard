@@ -1,7 +1,7 @@
 use crate::config::{self, Language, Member, Repository};
 use crate::git::{
-    self, BranchInfo, ChangedFile, CommitSummary, DiffRowKind, FileDiff, StashEntry, Summary,
-    TagInfo,
+    self, BranchInfo, ChangedFile, CommitSummary, Contributor, DiffRowKind, FileDiff, StashEntry,
+    Summary, TagInfo,
 };
 use crate::i18n;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,16 +27,18 @@ pub enum RepoTab {
     Branches,
     Tags,
     Stash,
+    Contributors,
 }
 
 impl RepoTab {
-    pub fn all() -> [RepoTab; 5] {
+    pub fn all() -> [RepoTab; 6] {
         [
             RepoTab::Status,
             RepoTab::Commits,
             RepoTab::Branches,
             RepoTab::Tags,
             RepoTab::Stash,
+            RepoTab::Contributors,
         ]
     }
 
@@ -46,17 +48,19 @@ impl RepoTab {
             Self::Commits => Self::Branches,
             Self::Branches => Self::Tags,
             Self::Tags => Self::Stash,
-            Self::Stash => Self::Status,
+            Self::Stash => Self::Contributors,
+            Self::Contributors => Self::Status,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::Status => Self::Stash,
+            Self::Status => Self::Contributors,
             Self::Commits => Self::Status,
             Self::Branches => Self::Commits,
             Self::Tags => Self::Branches,
             Self::Stash => Self::Tags,
+            Self::Contributors => Self::Stash,
         }
     }
 
@@ -67,6 +71,7 @@ impl RepoTab {
             '3' => Some(Self::Branches),
             '4' => Some(Self::Tags),
             '5' => Some(Self::Stash),
+            '6' => Some(Self::Contributors),
             _ => None,
         }
     }
@@ -121,6 +126,8 @@ pub struct RepoSnapshot {
     pub stashes_err: Option<String>,
     pub working_files: Vec<ChangedFile>,
     pub working_err: Option<String>,
+    pub contributors: Vec<Contributor>,
+    pub contributors_err: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +190,24 @@ enum Confirm {
 enum InputKind {
     Filter,
     AddRepo,
+    AddAlias,
+    Rename,
+    DiffCommand,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalDiff {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: PathBuf,
+    pub pipe_git_diff: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitPreview {
+    pub hash: String,
+    pub header: String,
+    pub files: Vec<ChangedFile>,
 }
 
 enum Job {
@@ -238,6 +263,11 @@ enum Job {
         path: PathBuf,
         branch: String,
     },
+    LoadCommitPreview {
+        seq: u64,
+        path: PathBuf,
+        hash: String,
+    },
 }
 
 enum Msg {
@@ -272,6 +302,12 @@ enum Msg {
         title: String,
         body: Result<String, String>,
     },
+    CommitPreviewLoaded {
+        seq: u64,
+        hash: String,
+        header: Result<String, String>,
+        files: Result<Vec<ChangedFile>, String>,
+    },
 }
 
 pub struct App {
@@ -295,13 +331,21 @@ pub struct App {
     pub should_quit: bool,
     pub tag_base: Option<String>,
     pub tag_target: Option<String>,
+    pub commit_base: Option<String>,
+    pub commit_target: Option<String>,
+    pub commit_preview: Option<CommitPreview>,
     pub list_filter: String,
     pub log: Option<LogView>,
+    pub active_only: bool,
     input: Option<InputKind>,
     input_buf: String,
     confirm: Option<Confirm>,
     help_return: Option<Screen>,
     home_gen: u64,
+    pending_add_path: Option<PathBuf>,
+    rename_idx: Option<usize>,
+    pending_external: Option<ExternalDiff>,
+    preview_seq: u64,
     job_tx: Sender<Job>,
     msg_rx: Receiver<Msg>,
     diff_seq: u64,
@@ -343,13 +387,21 @@ impl App {
             should_quit: false,
             tag_base: None,
             tag_target: None,
+            commit_base: None,
+            commit_target: None,
+            commit_preview: None,
             list_filter: String::new(),
             log: None,
+            active_only: false,
             input: None,
             input_buf: String::new(),
             confirm: None,
             help_return: None,
             home_gen: 0,
+            pending_add_path: None,
+            rename_idx: None,
+            pending_external: None,
+            preview_seq: 0,
             job_tx,
             msg_rx,
             diff_seq: 0,
@@ -378,11 +430,56 @@ impl App {
     }
 
     pub fn is_adding_repo(&self) -> bool {
-        matches!(self.input, Some(InputKind::AddRepo))
+        matches!(
+            self.input,
+            Some(InputKind::AddRepo | InputKind::AddAlias | InputKind::Rename | InputKind::DiffCommand)
+        )
+    }
+
+    pub fn prompt_title(&self) -> String {
+        match self.input {
+            Some(InputKind::AddRepo) => self.tt(
+                "Add repository  (~/path or /abs/path)",
+                "リポジトリ追加  (~/path または 絶対パス)",
+            ),
+            Some(InputKind::AddAlias) => self.tt(
+                "Display name / alias (Enter to use folder name)",
+                "表示名 / 別名 (Enter でフォルダ名)",
+            ),
+            Some(InputKind::Rename) => self.tt("Rename alias", "別名を変更"),
+            Some(InputKind::DiffCommand) => self.tt(
+                "Diff tool (empty = builtin, e.g. hunk)",
+                "Diff ツール (空 = 内蔵, 例: hunk)",
+            ),
+            _ => String::new(),
+        }
     }
 
     pub fn input_buf(&self) -> &str {
         &self.input_buf
+    }
+
+    pub fn take_external(&mut self) -> Option<ExternalDiff> {
+        self.pending_external.take()
+    }
+
+    pub fn diff_tool_label(&self) -> String {
+        let c = self.prefs.diff_command.trim();
+        if c.is_empty() {
+            self.tt("builtin", "内蔵")
+        } else {
+            c.to_string()
+        }
+    }
+
+    pub fn sort_label(&self) -> String {
+        match self.prefs.repo_sort {
+            0 => self.tt("name ↑", "名前 ↑"),
+            1 => self.tt("name ↓", "名前 ↓"),
+            2 => self.tt("updated ↓", "更新 ↓"),
+            3 => self.tt("updated ↑", "更新 ↑"),
+            _ => String::new(),
+        }
     }
 
     pub fn confirm_message(&self) -> Option<String> {
@@ -400,7 +497,9 @@ impl App {
     }
 
     pub fn filtered_home(&self) -> Vec<usize> {
-        filter_repo_indices(&self.repos, &self.home_filter)
+        let mut idx = filter_repo_indices(&self.repos, &self.home_filter);
+        sort_repo_indices(&mut idx, &self.repos, &self.home_rows, self.prefs.repo_sort);
+        idx
     }
 
     pub fn current_list_len(&self) -> usize {
@@ -415,6 +514,7 @@ impl App {
             RepoTab::Branches => data.branches_err.as_deref(),
             RepoTab::Tags => data.tags_err.as_deref(),
             RepoTab::Stash => data.stashes_err.as_deref(),
+            RepoTab::Contributors => data.contributors_err.as_deref(),
         }
     }
 
@@ -427,29 +527,33 @@ impl App {
         }
         match self.screen {
             Screen::Home => self.tt(
-                "j/k  enter open  / filter  a add  d delete  p pull  f fetch  s settings  ?  q quit",
-                "j/k  enter 開く  / 絞込  a 追加  d 削除  p pull  f fetch  s 設定  ?  q 終了",
+                "j/k  enter open  / filter  o sort  e alias  a add  d delete  p/f  s settings  q quit",
+                "j/k  enter 開く  / 絞込  o ソート  e 別名  a 追加  d 削除  p/f  s 設定  q 終了",
             ),
             Screen::Repo => match self.repo_tab {
                 RepoTab::Status => self.tt(
-                    "1-5 tabs  enter file-diff  2 commits  r reload  esc back  q quit",
-                    "1-5 タブ  enter ファイルdiff  2 コミット  r 再読込  esc 戻る  q 終了",
+                    "1-6 tabs  enter file-diff  2 commits  r reload  esc back  q quit",
+                    "1-6 タブ  enter ファイルdiff  2 コミット  r 再読込  esc 戻る  q 終了",
                 ),
                 RepoTab::Commits => self.tt(
-                    "1-5 tabs  enter diff  / filter  g/G top/end  r reload  esc back  q quit",
-                    "1-5 タブ  enter diff  / 絞込  g/G 先頭/末尾  r 再読込  esc 戻る  q 終了",
+                    "1-6 tabs  space mark  enter diff/compare  i builtin  / filter  r reload  q quit",
+                    "1-6 タブ  space 選択  enter diff/比較  i 内蔵  / 絞込  r 再読込  q 終了",
                 ),
                 RepoTab::Branches => self.tt(
-                    "1-5 tabs  enter log  / filter  r reload  esc back  q quit",
-                    "1-5 タブ  enter ログ  / 絞込  r 再読込  esc 戻る  q 終了",
+                    "1-6 tabs  enter log  / filter  r reload  esc back  q quit",
+                    "1-6 タブ  enter ログ  / 絞込  r 再読込  esc 戻る  q 終了",
                 ),
                 RepoTab::Tags => self.tt(
-                    "1-5 tabs  space mark  enter compare  r reload  esc back  q quit",
-                    "1-5 タブ  space 選択  enter 比較  r 再読込  esc 戻る  q 終了",
+                    "1-6 tabs  space mark  enter compare  r reload  esc back  q quit",
+                    "1-6 タブ  space 選択  enter 比較  r 再読込  esc 戻る  q 終了",
                 ),
                 RepoTab::Stash => self.tt(
-                    "1-5 tabs  enter diff  a apply  d drop  r reload  esc back  q quit",
-                    "1-5 タブ  enter diff  a 適用  d 削除  r 再読込  esc 戻る  q 終了",
+                    "1-6 tabs  enter diff  a apply  d drop  r reload  esc back  q quit",
+                    "1-6 タブ  enter diff  a 適用  d 削除  r 再読込  esc 戻る  q 終了",
+                ),
+                RepoTab::Contributors => self.tt(
+                    "1-6 tabs  m active-only  / filter  r reload  esc back  q quit",
+                    "1-6 タブ  m メンテ中のみ  / 絞込  r 再読込  esc 戻る  q 終了",
                 ),
             },
             Screen::Diff => {
@@ -470,8 +574,8 @@ impl App {
                 )
             }
             Screen::Settings => self.tt(
-                "j/k  a add  d delete  l language  esc back  q quit",
-                "j/k  a 追加  d 削除  l 言語  esc 戻る  q 終了",
+                "j/k  a add  d delete  e alias  c diff-tool  l language  esc back  q quit",
+                "j/k  a 追加  d 削除  e 別名  c diffツール  l 言語  esc 戻る  q 終了",
             ),
             Screen::Help => self.tt("esc back  q quit", "esc 戻る  q 終了"),
             Screen::Log => self.tt("j/k scroll  esc back  q quit", "j/k スクロール  esc 戻る  q 終了"),
@@ -566,6 +670,18 @@ impl App {
                 .filter(|(_, s)| matches(&s.ref_name) || matches(&s.message) || matches(&s.author))
                 .map(|(i, _)| i)
                 .collect(),
+            RepoTab::Contributors => data
+                .contributors
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    if self.active_only && !(c.is_member && c.is_active) {
+                        return false;
+                    }
+                    matches(&c.name) || matches(&c.email) || matches(&c.last_commit)
+                })
+                .map(|(i, _)| i)
+                .collect(),
         }
     }
 
@@ -622,6 +738,21 @@ impl App {
                         }
                     }
                     Some(InputKind::AddRepo) => self.add_repo_from_path(&buf),
+                    Some(InputKind::AddAlias) => self.finish_add_repo(buf),
+                    Some(InputKind::Rename) => self.rename_selected(buf),
+                    Some(InputKind::DiffCommand) => {
+                        self.prefs.diff_command = buf.trim().to_string();
+                        let _ = config::save_preferences(&self.prefs);
+                        self.status = if self.prefs.diff_command.is_empty() {
+                            self.tt("Using builtin diff.", "内蔵 diff を使います。")
+                        } else {
+                            format!(
+                                "{} {}",
+                                self.tt("Diff tool:", "Diff ツール:"),
+                                self.prefs.diff_command
+                            )
+                        };
+                    }
                     None => {}
                 }
             }
@@ -668,6 +799,8 @@ impl App {
                 self.input_buf.clone_from(&self.home_filter);
             }
             KeyCode::Char('a') => self.begin_add_repo(),
+            KeyCode::Char('o') => self.cycle_sort(),
+            KeyCode::Char('e') => self.begin_rename_home(),
             KeyCode::Char('d') => {
                 if let Some(&idx) = self.filtered_home().get(self.home_selected) {
                     self.confirm = Some(Confirm::DeleteRepo(idx));
@@ -712,15 +845,27 @@ impl App {
                     self.reload_repo(idx);
                 }
             }
-            KeyCode::Char('g') => self.list_selected = 0,
+            KeyCode::Char('g') => {
+                self.list_selected = 0;
+                self.after_list_move();
+            }
             KeyCode::Char('G') => {
                 self.list_selected = self.current_list_len().saturating_sub(1);
+                self.after_list_move();
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_list(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_list(-1),
             KeyCode::Char('p') => self.pull_current_repo(),
             KeyCode::Char('f') => self.fetch_current_repo(),
+            KeyCode::Char('m') if self.repo_tab == RepoTab::Contributors => {
+                self.active_only = !self.active_only;
+                self.list_selected = 0;
+            }
+            KeyCode::Char('i') if self.repo_tab == RepoTab::Commits => {
+                self.open_selected_commit(true);
+            }
             KeyCode::Char(' ') if self.repo_tab == RepoTab::Tags => self.toggle_tag_marker(),
+            KeyCode::Char(' ') if self.repo_tab == RepoTab::Commits => self.toggle_commit_marker(),
             KeyCode::Char('a') if self.repo_tab == RepoTab::Stash => self.apply_selected_stash(),
             KeyCode::Char('d') if self.repo_tab == RepoTab::Stash => {
                 if let (Some(idx), Some(item)) = (self.repo_index, self.selected_item_index())
@@ -821,6 +966,15 @@ impl App {
                     self.confirm = Some(Confirm::DeleteRepo(self.settings_selected));
                 }
             }
+            KeyCode::Char('e') => {
+                if self.settings_selected < self.repos.len() {
+                    self.begin_rename(self.settings_selected);
+                }
+            }
+            KeyCode::Char('c') => {
+                self.input = Some(InputKind::DiffCommand);
+                self.input_buf.clone_from(&self.prefs.diff_command);
+            }
             KeyCode::Char('l') => self.toggle_language(),
             _ => {}
         }
@@ -834,12 +988,20 @@ impl App {
     fn move_list(&mut self, delta: isize) {
         let n = self.current_list_len();
         self.list_selected = move_index(self.list_selected, n, delta);
+        self.after_list_move();
+    }
+
+    fn after_list_move(&mut self) {
+        if self.repo_tab == RepoTab::Commits {
+            self.request_commit_preview();
+        }
     }
 
     fn switch_tab(&mut self, tab: RepoTab) {
         self.repo_tab = tab;
         self.list_selected = 0;
         self.list_filter.clear();
+        self.after_list_move();
     }
 
     fn diff_move(&mut self, delta: isize) {
@@ -982,7 +1144,14 @@ impl App {
         self.list_filter.clear();
         self.tag_base = None;
         self.tag_target = None;
+        self.commit_base = None;
+        self.commit_target = None;
+        self.commit_preview = None;
         self.screen = Screen::Repo;
+        if let Some(cached) = load_tui_cache(&repo.path) {
+            self.repo_data = Some(cached);
+            self.repo_loading = true;
+        }
         self.status = self.t("analyzing_repo_data");
         let _ = self.job_tx.send(Job::LoadRepo {
             index: idx,
@@ -1013,7 +1182,9 @@ impl App {
         match self.repo_tab {
             RepoTab::Status => {
                 let path = item.and_then(|i| data?.working_files.get(i).map(|f| f.path.clone()));
-                if let Some(path) = path {
+                if let Some(path) = path
+                    && !self.launch_external(None, "WORKING_TREE")
+                {
                     self.open_diff(
                         idx,
                         None,
@@ -1025,18 +1196,27 @@ impl App {
                 }
             }
             RepoTab::Commits => {
-                let commit = item.and_then(|i| {
-                    data?.commits
-                        .get(i)
-                        .map(|c| (c.hash.clone(), c.message.clone()))
-                });
-                if let Some((hash, message)) = commit {
-                    self.open_commit_diff(idx, hash, message);
+                if let (Some(base), Some(target)) = (
+                    self.commit_base.clone(),
+                    self.commit_target.clone(),
+                ) && !self.launch_external(Some(&base), &target)
+                {
+                    self.open_diff(
+                        idx,
+                        Some(base.clone()),
+                        target.clone(),
+                        true,
+                        None,
+                        format!("{base}...{target}"),
+                    );
+                } else if self.commit_base.is_none() || self.commit_target.is_none() {
+                    self.open_selected_commit(false);
                 }
             }
             RepoTab::Tags => {
                 if let (Some(base), Some(target)) =
                     (self.tag_base.clone(), self.tag_target.clone())
+                    && !self.launch_external(Some(&base), &target)
                 {
                     self.open_diff(
                         idx,
@@ -1069,7 +1249,27 @@ impl App {
                     self.open_commit_diff(idx, stash_ref, message);
                 }
             }
+            RepoTab::Contributors => {}
         }
+    }
+
+    fn open_selected_commit(&mut self, force_builtin: bool) {
+        let Some(idx) = self.repo_index else {
+            return;
+        };
+        let item = self.selected_item_index();
+        let commit = item.and_then(|i| {
+            self.repo_data.as_ref()?.commits.get(i).map(|c| {
+                (c.hash.clone(), c.message.clone())
+            })
+        });
+        let Some((hash, message)) = commit else {
+            return;
+        };
+        if !force_builtin && self.launch_external(None, &hash) {
+            return;
+        }
+        self.open_commit_diff(idx, hash, message);
     }
 
     fn open_commit_diff(&mut self, repo_idx: usize, hash: String, message: String) {
@@ -1196,6 +1396,160 @@ impl App {
         }
     }
 
+    fn toggle_commit_marker(&mut self) {
+        let Some(data) = self.repo_data.as_ref() else {
+            return;
+        };
+        let Some(i) = self.selected_item_index() else {
+            return;
+        };
+        let Some(c) = data.commits.get(i) else {
+            return;
+        };
+        let name = c.hash.clone();
+        if self.commit_base.as_deref() == Some(name.as_str()) {
+            self.commit_base = None;
+        } else if self.commit_target.as_deref() == Some(name.as_str()) {
+            self.commit_target = None;
+        } else if self.commit_base.is_none() {
+            self.commit_base = Some(name);
+        } else {
+            self.commit_target = Some(name);
+        }
+    }
+
+    fn cycle_sort(&mut self) {
+        self.prefs.repo_sort = (self.prefs.repo_sort + 1) % 4;
+        let _ = config::save_preferences(&self.prefs);
+        self.home_selected = 0;
+        self.status = format!(
+            "{} {}",
+            self.tt("Sort:", "ソート:"),
+            self.sort_label()
+        );
+    }
+
+    fn begin_rename_home(&mut self) {
+        if let Some(&idx) = self.filtered_home().get(self.home_selected) {
+            self.begin_rename(idx);
+        }
+    }
+
+    fn begin_rename(&mut self, idx: usize) {
+        let Some(repo) = self.repos.get(idx) else {
+            return;
+        };
+        self.rename_idx = Some(idx);
+        self.input = Some(InputKind::Rename);
+        self.input_buf.clone_from(&repo.name);
+    }
+
+    fn rename_selected(&mut self, name: String) {
+        let Some(idx) = self.rename_idx.take() else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() || idx >= self.repos.len() {
+            return;
+        }
+        self.repos[idx].name = name.to_string();
+        if let Err(e) = config::save_repositories(&self.repos) {
+            self.error = Some(e);
+        }
+    }
+
+    fn finish_add_repo(&mut self, alias: String) {
+        let Some(path) = self.pending_add_path.take() else {
+            return;
+        };
+        let default_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| path.display().to_string());
+        let name = {
+            let t = alias.trim();
+            if t.is_empty() {
+                default_name
+            } else {
+                t.to_string()
+            }
+        };
+        self.repos.push(Repository {
+            name,
+            path: path.clone(),
+        });
+        if let Err(e) = config::save_repositories(&self.repos) {
+            self.error = Some(e);
+            self.repos.pop();
+            return;
+        }
+        let index = self.repos.len() - 1;
+        let _ = self.job_tx.send(Job::LoadHome {
+            generation: self.home_gen,
+            index,
+            path,
+            members: self.members.clone(),
+        });
+        self.status = self.t("added_success");
+        if self.screen == Screen::Settings {
+            self.settings_selected = index;
+        }
+    }
+
+    fn request_commit_preview(&mut self) {
+        let Some(idx) = self.repo_index else {
+            return;
+        };
+        let hash = self.selected_item_index().and_then(|i| {
+            self.repo_data
+                .as_ref()?
+                .commits
+                .get(i)
+                .map(|c| c.hash.clone())
+        });
+        let Some(hash) = hash else {
+            self.commit_preview = None;
+            return;
+        };
+        if self.commit_preview.as_ref().is_some_and(|p| p.hash == hash) {
+            return;
+        }
+        let Some(repo) = self.repos.get(idx) else {
+            return;
+        };
+        self.preview_seq += 1;
+        let seq = self.preview_seq;
+        let _ = self.job_tx.send(Job::LoadCommitPreview {
+            seq,
+            path: repo.path.clone(),
+            hash,
+        });
+    }
+
+    fn launch_external(&mut self, base: Option<&str>, target: &str) -> bool {
+        let cmd = self.prefs.diff_command.trim();
+        if cmd.is_empty() {
+            return false;
+        }
+        let Some(idx) = self.repo_index else {
+            return false;
+        };
+        let Some(repo) = self.repos.get(idx) else {
+            return false;
+        };
+        match resolve_diff_command(cmd, &repo.path, base, target) {
+            Ok(ext) => {
+                self.pending_external = Some(ext);
+                true
+            }
+            Err(e) => {
+                self.error = Some(e);
+                false
+            }
+        }
+    }
+
     fn begin_add_repo(&mut self) {
         self.input = Some(InputKind::AddRepo);
         self.input_buf.clear();
@@ -1222,31 +1576,14 @@ impl App {
             self.error = Some(self.t("already_registered"));
             return;
         }
-        let name = path
+        let default_name = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| path.display().to_string());
-        self.repos.push(Repository {
-            name,
-            path: path.clone(),
-        });
-        if let Err(e) = config::save_repositories(&self.repos) {
-            self.error = Some(e);
-            self.repos.pop();
-            return;
-        }
-        let index = self.repos.len() - 1;
-        let _ = self.job_tx.send(Job::LoadHome {
-            generation: self.home_gen,
-            index,
-            path,
-            members: self.members.clone(),
-        });
-        self.status = self.t("added_success");
-        if self.screen == Screen::Settings {
-            self.settings_selected = index;
-        }
+        self.pending_add_path = Some(path);
+        self.input = Some(InputKind::AddAlias);
+        self.input_buf = default_name;
     }
 
     fn delete_repo(&mut self, i: usize) {
@@ -1402,7 +1739,13 @@ impl App {
                 match *data {
                     Ok(snap) => {
                         self.status.clear();
+                        if let Some(repo) = self.repos.get(index) {
+                            save_tui_cache(&repo.path, &snap);
+                        }
                         self.repo_data = Some(snap);
+                        if self.repo_tab == RepoTab::Commits {
+                            self.request_commit_preview();
+                        }
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -1503,6 +1846,21 @@ impl App {
                 } else {
                     self.error = Some(text);
                 }
+            }
+            Msg::CommitPreviewLoaded {
+                seq,
+                hash,
+                header,
+                files,
+            } => {
+                if seq != self.preview_seq {
+                    return;
+                }
+                self.commit_preview = Some(CommitPreview {
+                    hash,
+                    header: header.unwrap_or_default(),
+                    files: files.unwrap_or_default(),
+                });
             }
             Msg::LogLoaded { title, body } => match body {
                 Ok(raw) => {
@@ -1767,6 +2125,16 @@ fn spawn_worker(job_rx: Receiver<Job>, msg_tx: Sender<Msg>) {
                         body,
                     }
                 }
+                Job::LoadCommitPreview { seq, path, hash } => {
+                    let header = git::get_commit_show(&path, &hash);
+                    let files = git::get_changed_files(&path, None, &hash, false);
+                    Msg::CommitPreviewLoaded {
+                        seq,
+                        hash,
+                        header,
+                        files,
+                    }
+                }
             };
             if msg_tx.send(msg).is_err() {
                 break;
@@ -1799,6 +2167,7 @@ fn load_repo(path: &std::path::Path, members: &[Member]) -> Result<RepoSnapshot,
     let (stashes, stashes_err) = split_list(git::get_stash_list(path));
     let (working_files, working_err) =
         split_list(git::get_changed_files(path, None, "WORKING_TREE", false));
+    let (contributors, contributors_err) = split_list(git::get_contributors(path, members));
     Ok(RepoSnapshot {
         summary,
         commits,
@@ -1811,6 +2180,153 @@ fn load_repo(path: &std::path::Path, members: &[Member]) -> Result<RepoSnapshot,
         stashes_err,
         working_files,
         working_err,
+        contributors,
+        contributors_err,
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TuiCache {
+    version: u32,
+    summary: Summary,
+    commits: Vec<CommitSummary>,
+    branches: Vec<BranchInfo>,
+    tags: Vec<TagInfo>,
+    stashes: Vec<StashEntry>,
+    contributors: Vec<Contributor>,
+}
+
+fn load_tui_cache(path: &std::path::Path) -> Option<RepoSnapshot> {
+    let json = std::fs::read_to_string(config::tui_cache_path(path)).ok()?;
+    let cache: TuiCache = serde_json::from_str(&json).ok()?;
+    if cache.version != 1 {
+        return None;
+    }
+    Some(RepoSnapshot {
+        summary: cache.summary,
+        commits: cache.commits,
+        commits_err: None,
+        branches: cache.branches,
+        branches_err: None,
+        tags: cache.tags,
+        tags_err: None,
+        stashes: cache.stashes,
+        stashes_err: None,
+        working_files: Vec::new(),
+        working_err: None,
+        contributors: cache.contributors,
+        contributors_err: None,
+    })
+}
+
+fn save_tui_cache(path: &std::path::Path, snap: &RepoSnapshot) {
+    let _ = std::fs::create_dir_all(config::cache_dir());
+    let cache = TuiCache {
+        version: 1,
+        summary: snap.summary.clone(),
+        commits: snap.commits.clone(),
+        branches: snap.branches.clone(),
+        tags: snap.tags.clone(),
+        stashes: snap.stashes.clone(),
+        contributors: snap.contributors.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&cache) {
+        let _ = config::write_atomic(&config::tui_cache_path(path), &json);
+    }
+}
+
+fn sort_repo_indices(
+    idx: &mut [usize],
+    repos: &[Repository],
+    rows: &HashMap<usize, HomeRow>,
+    sort_by: usize,
+) {
+    idx.sort_by(|&a, &b| {
+        let date = |i: usize| rows.get(&i).map(|r| r.last_commit.as_str()).unwrap_or("");
+        match sort_by {
+            0 => repos[a].name.to_lowercase().cmp(&repos[b].name.to_lowercase()),
+            1 => repos[b].name.to_lowercase().cmp(&repos[a].name.to_lowercase()),
+            3 => {
+                let da = date(a);
+                let db = date(b);
+                match (da.is_empty(), db.is_empty()) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    _ => da.cmp(db),
+                }
+            }
+            _ => {
+                let da = date(a);
+                let db = date(b);
+                match (da.is_empty(), db.is_empty()) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    _ => db.cmp(da),
+                }
+            }
+        }
+    });
+}
+
+fn resolve_diff_command(
+    template: &str,
+    repo: &std::path::Path,
+    base: Option<&str>,
+    target: &str,
+) -> Result<ExternalDiff, String> {
+    let t = template.trim();
+    if t.is_empty() {
+        return Err("diff command is empty".into());
+    }
+    let first = t.split_whitespace().next().unwrap_or(t);
+    let is_hunk = first == "hunk" || first == "hunkdiff";
+    if is_hunk && !t.contains('{') {
+        let wt = target == "WORKING_TREE";
+        if wt {
+            return Ok(ExternalDiff {
+                program: first.to_string(),
+                args: vec!["diff".into()],
+                cwd: repo.to_path_buf(),
+                pipe_git_diff: None,
+            });
+        }
+        if let Some(b) = base {
+            return Ok(ExternalDiff {
+                program: first.to_string(),
+                args: vec!["pager".into()],
+                cwd: repo.to_path_buf(),
+                pipe_git_diff: Some(vec![
+                    "diff".into(),
+                    format!("{b}...{target}"),
+                ]),
+            });
+        }
+        return Ok(ExternalDiff {
+            program: first.to_string(),
+            args: vec!["show".into(), target.to_string()],
+            cwd: repo.to_path_buf(),
+            pipe_git_diff: None,
+        });
+    }
+    let expanded = t
+        .replace("{path}", &repo.display().to_string())
+        .replace("{repo}", &repo.display().to_string())
+        .replace("{base}", base.unwrap_or(""))
+        .replace(
+            "{target}",
+            if target == "WORKING_TREE" { "" } else { target },
+        )
+        .replace("{file}", "");
+    let mut parts = expanded.split_whitespace();
+    let program = parts
+        .next()
+        .ok_or_else(|| "diff command has no program".to_string())?
+        .to_string();
+    Ok(ExternalDiff {
+        program,
+        args: parts.map(str::to_string).collect(),
+        cwd: repo.to_path_buf(),
+        pipe_git_diff: None,
     })
 }
 
@@ -1893,12 +2409,12 @@ mod tests {
     #[test]
     fn tab_cycle_is_circular() {
         let mut t = RepoTab::Status;
-        for _ in 0..5 {
+        for _ in 0..6 {
             t = t.next();
         }
         assert_eq!(t, RepoTab::Status);
         t = t.prev();
-        assert_eq!(t, RepoTab::Stash);
+        assert_eq!(t, RepoTab::Contributors);
     }
 
     #[test]
@@ -2161,11 +2677,60 @@ mod tests {
             stashes_err: None,
             working_files: vec![],
             working_err: None,
+            contributors: vec![],
+            contributors_err: None,
         });
         app.handle_key(KeyEvent::from(KeyCode::Char('/')));
         app.handle_key(KeyEvent::from(KeyCode::Char('t')));
         app.handle_key(KeyEvent::from(KeyCode::Char('u')));
         app.handle_key(KeyEvent::from(KeyCode::Char('i')));
         assert_eq!(app.visible_indices(), vec![1]);
+    }
+
+    #[test]
+    fn sort_repo_indices_by_name_and_date() {
+        let repos = vec![
+            repo("zeta", "/z"),
+            repo("alpha", "/a"),
+        ];
+        let mut rows = HashMap::new();
+        rows.insert(
+            0,
+            HomeRow {
+                branch: "main".into(),
+                ahead: 0,
+                behind: 0,
+                dirty: 0,
+                last_commit: "2026-01-01".into(),
+            },
+        );
+        rows.insert(
+            1,
+            HomeRow {
+                branch: "main".into(),
+                ahead: 0,
+                behind: 0,
+                dirty: 0,
+                last_commit: "2026-08-01".into(),
+            },
+        );
+        let mut idx = vec![0, 1];
+        sort_repo_indices(&mut idx, &repos, &rows, 0);
+        assert_eq!(idx, vec![1, 0]);
+        sort_repo_indices(&mut idx, &repos, &rows, 2);
+        assert_eq!(idx, vec![1, 0]);
+    }
+
+    #[test]
+    fn resolve_hunk_command_variants() {
+        let repo = PathBuf::from("/tmp/repo");
+        let wt = resolve_diff_command("hunk", &repo, None, "WORKING_TREE").unwrap();
+        assert_eq!(wt.args, vec!["diff"]);
+        let show = resolve_diff_command("hunk", &repo, None, "abc123").unwrap();
+        assert_eq!(show.args, vec!["show", "abc123"]);
+        let range = resolve_diff_command("hunk", &repo, Some("aaa"), "bbb").unwrap();
+        assert_eq!(range.args, vec!["pager"]);
+        assert!(range.pipe_git_diff.is_some());
+        assert!(resolve_diff_command("", &repo, None, "abc").is_err());
     }
 }
