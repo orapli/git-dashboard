@@ -17,6 +17,7 @@ pub enum Screen {
     Diff,
     Settings,
     Help,
+    Log,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,10 +91,22 @@ pub struct HomeRow {
 pub struct RepoSnapshot {
     pub summary: Summary,
     pub commits: Vec<CommitSummary>,
+    pub commits_err: Option<String>,
     pub branches: Vec<BranchInfo>,
+    pub branches_err: Option<String>,
     pub tags: Vec<TagInfo>,
+    pub tags_err: Option<String>,
     pub stashes: Vec<StashEntry>,
+    pub stashes_err: Option<String>,
     pub working_files: Vec<ChangedFile>,
+    pub working_err: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogView {
+    pub title: String,
+    pub body: String,
+    pub scroll: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +144,7 @@ enum InputKind {
 
 enum Job {
     LoadHome {
+        generation: u64,
         index: usize,
         path: PathBuf,
         members: Vec<Member>,
@@ -172,19 +186,20 @@ enum Job {
     StashApply {
         path: PathBuf,
         stash_ref: String,
-        repo_idx: usize,
-        members: Vec<Member>,
     },
     StashDrop {
         path: PathBuf,
         stash_ref: String,
-        repo_idx: usize,
-        members: Vec<Member>,
+    },
+    LoadBranchLog {
+        path: PathBuf,
+        branch: String,
     },
 }
 
 enum Msg {
     HomeLoaded {
+        generation: u64,
         index: usize,
         row: Result<HomeRow, String>,
     },
@@ -210,6 +225,10 @@ enum Msg {
         ok: bool,
         text: String,
     },
+    LogLoaded {
+        title: String,
+        body: Result<String, String>,
+    },
 }
 
 pub struct App {
@@ -233,9 +252,13 @@ pub struct App {
     pub should_quit: bool,
     pub tag_base: Option<String>,
     pub tag_target: Option<String>,
+    pub list_filter: String,
+    pub log: Option<LogView>,
     input: Option<InputKind>,
     input_buf: String,
     confirm: Option<Confirm>,
+    help_return: Option<Screen>,
+    home_gen: u64,
     job_tx: Sender<Job>,
     msg_rx: Receiver<Msg>,
     diff_seq: u64,
@@ -264,7 +287,7 @@ impl App {
             home_filter: String::new(),
             home_selected: 0,
             home_rows: HashMap::new(),
-            repo_tab: RepoTab::Status,
+            repo_tab: RepoTab::Commits,
             repo_index: None,
             repo_data: None,
             repo_loading: false,
@@ -277,9 +300,13 @@ impl App {
             should_quit: false,
             tag_base: None,
             tag_target: None,
+            list_filter: String::new(),
+            log: None,
             input: None,
             input_buf: String::new(),
             confirm: None,
+            help_return: None,
+            home_gen: 0,
             job_tx,
             msg_rx,
             diff_seq: 0,
@@ -334,15 +361,64 @@ impl App {
     }
 
     pub fn current_list_len(&self) -> usize {
-        let Some(data) = self.repo_data.as_ref() else {
-            return 0;
-        };
+        self.visible_indices().len()
+    }
+
+    pub fn list_error(&self) -> Option<&str> {
+        let data = self.repo_data.as_ref()?;
         match self.repo_tab {
-            RepoTab::Status => data.working_files.len(),
-            RepoTab::Commits => data.commits.len(),
-            RepoTab::Branches => data.branches.len(),
-            RepoTab::Tags => data.tags.len(),
-            RepoTab::Stash => data.stashes.len(),
+            RepoTab::Status => data.working_err.as_deref(),
+            RepoTab::Commits => data.commits_err.as_deref(),
+            RepoTab::Branches => data.branches_err.as_deref(),
+            RepoTab::Tags => data.tags_err.as_deref(),
+            RepoTab::Stash => data.stashes_err.as_deref(),
+        }
+    }
+
+    pub fn footer_keys(&self) -> String {
+        if self.is_filtering() {
+            return self.tt(
+                "type to filter  enter apply  esc clear",
+                "入力で絞り込み  enter 確定  esc 解除",
+            );
+        }
+        match self.screen {
+            Screen::Home => self.tt(
+                "j/k  enter open  / filter  a add  d delete  p pull  f fetch  s settings  ?  q quit",
+                "j/k  enter 開く  / 絞込  a 追加  d 削除  p pull  f fetch  s 設定  ?  q 終了",
+            ),
+            Screen::Repo => match self.repo_tab {
+                RepoTab::Status => self.tt(
+                    "1-5 tabs  enter file-diff  2 commits  r reload  esc back  q quit",
+                    "1-5 タブ  enter ファイルdiff  2 コミット  r 再読込  esc 戻る  q 終了",
+                ),
+                RepoTab::Commits => self.tt(
+                    "1-5 tabs  enter diff  / filter  g/G top/end  r reload  esc back  q quit",
+                    "1-5 タブ  enter diff  / 絞込  g/G 先頭/末尾  r 再読込  esc 戻る  q 終了",
+                ),
+                RepoTab::Branches => self.tt(
+                    "1-5 tabs  enter log  / filter  r reload  esc back  q quit",
+                    "1-5 タブ  enter ログ  / 絞込  r 再読込  esc 戻る  q 終了",
+                ),
+                RepoTab::Tags => self.tt(
+                    "1-5 tabs  space mark  enter compare  r reload  esc back  q quit",
+                    "1-5 タブ  space 選択  enter 比較  r 再読込  esc 戻る  q 終了",
+                ),
+                RepoTab::Stash => self.tt(
+                    "1-5 tabs  enter diff  a apply  d drop  r reload  esc back  q quit",
+                    "1-5 タブ  enter diff  a 適用  d 削除  r 再読込  esc 戻る  q 終了",
+                ),
+            },
+            Screen::Diff => self.tt(
+                "tab/h/l panes  j/k  n/p hunk  enter load file  esc back  q quit",
+                "tab/h/l ペイン  j/k  n/p hunk  enter ファイル  esc 戻る  q 終了",
+            ),
+            Screen::Settings => self.tt(
+                "j/k  a add  d delete  l language  esc back  q quit",
+                "j/k  a 追加  d 削除  l 言語  esc 戻る  q 終了",
+            ),
+            Screen::Help => self.tt("esc back  q quit", "esc 戻る  q 終了"),
+            Screen::Log => self.tt("j/k scroll  esc back  q quit", "j/k スクロール  esc 戻る  q 終了"),
         }
     }
 
@@ -353,7 +429,6 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
-        self.error = None;
         if self.confirm.is_some() {
             self.handle_confirm(key);
             return;
@@ -362,8 +437,19 @@ impl App {
             self.handle_input(key);
             return;
         }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
+            || key.code == KeyCode::Char('q')
+        {
             self.should_quit = true;
+            return;
+        }
+        if key.code == KeyCode::Char('?') && self.screen != Screen::Help {
+            self.help_return = Some(self.screen);
+            self.screen = Screen::Help;
+            return;
+        }
+        if key.code == KeyCode::Esc && self.error.is_some() {
+            self.error = None;
             return;
         }
         match self.screen {
@@ -371,15 +457,64 @@ impl App {
             Screen::Repo => self.handle_repo(key),
             Screen::Diff => self.handle_diff(key),
             Screen::Settings => self.handle_settings(key),
+            Screen::Log => self.handle_log(key),
             Screen::Help => {
-                if matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')
-                ) {
-                    self.screen = Screen::Home;
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Backspace) {
+                    self.screen = self.help_return.take().unwrap_or(Screen::Home);
                 }
             }
         }
+    }
+
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let Some(data) = self.repo_data.as_ref() else {
+            return Vec::new();
+        };
+        let q = self.list_filter.trim().to_lowercase();
+        let matches = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
+        match self.repo_tab {
+            RepoTab::Status => data
+                .working_files
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| matches(&f.path))
+                .map(|(i, _)| i)
+                .collect(),
+            RepoTab::Commits => data
+                .commits
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    matches(&c.hash) || matches(&c.author) || matches(&c.message) || matches(&c.date)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            RepoTab::Branches => data
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| matches(&b.name) || matches(&b.message) || matches(&b.author))
+                .map(|(i, _)| i)
+                .collect(),
+            RepoTab::Tags => data
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| matches(&t.name) || matches(&t.message) || matches(&t.hash))
+                .map(|(i, _)| i)
+                .collect(),
+            RepoTab::Stash => data
+                .stashes
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches(&s.ref_name) || matches(&s.message) || matches(&s.author))
+                .map(|(i, _)| i)
+                .collect(),
+        }
+    }
+
+    pub fn selected_item_index(&self) -> Option<usize> {
+        self.visible_indices().get(self.list_selected).copied()
     }
 
     fn handle_confirm(&mut self, key: KeyEvent) {
@@ -408,8 +543,13 @@ impl App {
                 let kind = self.input.take();
                 self.input_buf.clear();
                 if matches!(kind, Some(InputKind::Filter)) {
-                    self.home_filter.clear();
-                    self.home_selected = 0;
+                    if self.screen == Screen::Home {
+                        self.home_filter.clear();
+                        self.home_selected = 0;
+                    } else {
+                        self.list_filter.clear();
+                        self.list_selected = 0;
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -417,8 +557,13 @@ impl App {
                 let buf = std::mem::take(&mut self.input_buf);
                 match kind {
                     Some(InputKind::Filter) => {
-                        self.home_filter = buf;
-                        self.home_selected = 0;
+                        if self.screen == Screen::Home {
+                            self.home_filter = buf;
+                            self.home_selected = 0;
+                        } else {
+                            self.list_filter = buf;
+                            self.list_selected = 0;
+                        }
                     }
                     Some(InputKind::AddRepo) => self.add_repo_from_path(&buf),
                     None => {}
@@ -427,15 +572,25 @@ impl App {
             KeyCode::Backspace => {
                 self.input_buf.pop();
                 if matches!(self.input, Some(InputKind::Filter)) {
-                    self.home_filter.clone_from(&self.input_buf);
-                    self.home_selected = 0;
+                    if self.screen == Screen::Home {
+                        self.home_filter.clone_from(&self.input_buf);
+                        self.home_selected = 0;
+                    } else {
+                        self.list_filter.clone_from(&self.input_buf);
+                        self.list_selected = 0;
+                    }
                 }
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input_buf.push(c);
                 if matches!(self.input, Some(InputKind::Filter)) {
-                    self.home_filter.clone_from(&self.input_buf);
-                    self.home_selected = 0;
+                    if self.screen == Screen::Home {
+                        self.home_filter.clone_from(&self.input_buf);
+                        self.home_selected = 0;
+                    } else {
+                        self.list_filter.clone_from(&self.input_buf);
+                        self.list_selected = 0;
+                    }
                 }
             }
             _ => {}
@@ -444,8 +599,10 @@ impl App {
 
     fn handle_home(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.screen = Screen::Help,
+            KeyCode::Esc if !self.home_filter.is_empty() => {
+                self.home_filter.clear();
+                self.home_selected = 0;
+            }
             KeyCode::Char('s') => {
                 self.settings_selected = 0;
                 self.screen = Screen::Settings;
@@ -463,6 +620,11 @@ impl App {
             KeyCode::Char('p') => self.pull_selected_home(),
             KeyCode::Char('f') => self.fetch_selected_home(),
             KeyCode::Char('r') => self.refresh_home(),
+            KeyCode::Char('g') => self.home_selected = 0,
+            KeyCode::Char('G') => {
+                let n = self.filtered_home().len();
+                self.home_selected = n.saturating_sub(1);
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_home(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_home(-1),
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_selected_repo(),
@@ -476,22 +638,27 @@ impl App {
                 self.screen = Screen::Home;
                 self.repo_data = None;
                 self.repo_index = None;
+                self.list_filter.clear();
             }
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.screen = Screen::Help,
-            KeyCode::Tab | KeyCode::Char(']') => {
-                self.repo_tab = self.repo_tab.next();
-                self.list_selected = 0;
-            }
-            KeyCode::BackTab | KeyCode::Char('[') => {
-                self.repo_tab = self.repo_tab.prev();
-                self.list_selected = 0;
-            }
+            KeyCode::Tab | KeyCode::Char(']') => self.switch_tab(self.repo_tab.next()),
+            KeyCode::BackTab | KeyCode::Char('[') => self.switch_tab(self.repo_tab.prev()),
             KeyCode::Char(d) if d.is_ascii_digit() => {
                 if let Some(tab) = RepoTab::from_digit(d) {
-                    self.repo_tab = tab;
-                    self.list_selected = 0;
+                    self.switch_tab(tab);
                 }
+            }
+            KeyCode::Char('/') => {
+                self.input = Some(InputKind::Filter);
+                self.input_buf.clone_from(&self.list_filter);
+            }
+            KeyCode::Char('r') => {
+                if let Some(idx) = self.repo_index {
+                    self.reload_repo(idx);
+                }
+            }
+            KeyCode::Char('g') => self.list_selected = 0,
+            KeyCode::Char('G') => {
+                self.list_selected = self.current_list_len().saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => self.move_list(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_list(-1),
@@ -500,8 +667,9 @@ impl App {
             KeyCode::Char(' ') if self.repo_tab == RepoTab::Tags => self.toggle_tag_marker(),
             KeyCode::Char('a') if self.repo_tab == RepoTab::Stash => self.apply_selected_stash(),
             KeyCode::Char('d') if self.repo_tab == RepoTab::Stash => {
-                if let (Some(idx), Some(data)) = (self.repo_index, self.repo_data.as_ref())
-                    && let Some(st) = data.stashes.get(self.list_selected)
+                if let (Some(idx), Some(item)) = (self.repo_index, self.selected_item_index())
+                    && let Some(data) = self.repo_data.as_ref()
+                    && let Some(st) = data.stashes.get(item)
                 {
                     self.confirm = Some(Confirm::DropStash {
                         repo_idx: idx,
@@ -516,9 +684,15 @@ impl App {
 
     fn handle_diff(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => {
+            KeyCode::Esc | KeyCode::Backspace => {
                 self.diff = None;
                 self.screen = Screen::Repo;
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right if self.focus == FocusPane::List => {
+                self.focus = FocusPane::Content;
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.focus == FocusPane::Content => {
                 self.focus = FocusPane::List;
             }
             KeyCode::Tab => {
@@ -529,7 +703,8 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => self.diff_move(1),
             KeyCode::Up | KeyCode::Char('k') => self.diff_move(-1),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.diff_move(20),
+            KeyCode::PageDown => self.diff_move(20),
+            KeyCode::Char(' ') if self.focus == FocusPane::Content => self.diff_move(20),
             KeyCode::PageUp => self.diff_move(-20),
             KeyCode::Char('n') => self.next_hunk(1),
             KeyCode::Char('N') | KeyCode::Char('p') => self.next_hunk(-1),
@@ -538,9 +713,38 @@ impl App {
         }
     }
 
+    fn handle_log(&mut self, key: KeyEvent) {
+        let Some(log) = self.log.as_mut() else {
+            self.screen = Screen::Repo;
+            return;
+        };
+        let max = log.body.lines().count().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Backspace | KeyCode::Left => {
+                self.log = None;
+                self.screen = Screen::Repo;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                log.scroll = (log.scroll + 1).min(max);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                log.scroll = log.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                log.scroll = (log.scroll + 20).min(max);
+            }
+            KeyCode::PageUp => {
+                log.scroll = log.scroll.saturating_sub(20);
+            }
+            KeyCode::Char('g') => log.scroll = 0,
+            KeyCode::Char('G') => log.scroll = max,
+            _ => {}
+        }
+    }
+
     fn handle_settings(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Backspace => {
+            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Backspace => {
                 self.screen = Screen::Home;
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -573,16 +777,30 @@ impl App {
         self.list_selected = move_index(self.list_selected, n, delta);
     }
 
+    fn switch_tab(&mut self, tab: RepoTab) {
+        self.repo_tab = tab;
+        self.list_selected = 0;
+        self.list_filter.clear();
+    }
+
     fn diff_move(&mut self, delta: isize) {
-        let Some(diff) = self.diff.as_mut() else {
-            return;
-        };
-        if self.focus == FocusPane::List {
-            diff.file_idx = move_index(diff.file_idx, diff.files.len(), delta);
-            return;
+        let mut load = false;
+        {
+            let Some(diff) = self.diff.as_mut() else {
+                return;
+            };
+            if self.focus == FocusPane::List {
+                let old = diff.file_idx;
+                diff.file_idx = move_index(diff.file_idx, diff.files.len(), delta);
+                load = diff.file_idx != old;
+            } else {
+                let max = diff.lines.len().saturating_sub(1);
+                diff.scroll = (diff.scroll as isize + delta).clamp(0, max as isize) as usize;
+            }
         }
-        let max = diff.lines.len().saturating_sub(1);
-        diff.scroll = (diff.scroll as isize + delta).clamp(0, max as isize) as usize;
+        if load {
+            self.load_selected_diff_file();
+        }
     }
 
     fn next_hunk(&mut self, dir: isize) {
@@ -611,8 +829,11 @@ impl App {
 
     fn refresh_home(&mut self) {
         self.status = self.t("analyzing");
+        self.home_gen = self.home_gen.saturating_add(1);
+        let generation = self.home_gen;
         for (index, repo) in self.repos.iter().enumerate() {
             let _ = self.job_tx.send(Job::LoadHome {
+                generation,
                 index,
                 path: repo.path.clone(),
                 members: self.members.clone(),
@@ -640,11 +861,25 @@ impl App {
         self.repo_index = Some(idx);
         self.repo_data = None;
         self.repo_loading = true;
-        self.repo_tab = RepoTab::Status;
+        self.repo_tab = RepoTab::Commits;
         self.list_selected = 0;
+        self.list_filter.clear();
         self.tag_base = None;
         self.tag_target = None;
         self.screen = Screen::Repo;
+        self.status = self.t("analyzing_repo_data");
+        let _ = self.job_tx.send(Job::LoadRepo {
+            index: idx,
+            path: repo.path.clone(),
+            members: self.members.clone(),
+        });
+    }
+
+    fn reload_repo(&mut self, idx: usize) {
+        let Some(repo) = self.repos.get(idx) else {
+            return;
+        };
+        self.repo_loading = true;
         self.status = self.t("analyzing_repo_data");
         let _ = self.job_tx.send(Job::LoadRepo {
             index: idx,
@@ -657,25 +892,30 @@ impl App {
         let Some(idx) = self.repo_index else {
             return;
         };
-        let Some(data) = self.repo_data.as_ref() else {
-            return;
-        };
+        let item = self.selected_item_index();
+        let data = self.repo_data.as_ref();
         match self.repo_tab {
             RepoTab::Status => {
-                if let Some(f) = data.working_files.get(self.list_selected) {
+                let path = item.and_then(|i| data?.working_files.get(i).map(|f| f.path.clone()));
+                if let Some(path) = path {
                     self.open_diff(
                         idx,
                         None,
                         "WORKING_TREE".to_string(),
                         false,
-                        Some(f.path.clone()),
+                        Some(path),
                         self.tt("Working tree", "作業ツリー"),
                     );
                 }
             }
             RepoTab::Commits => {
-                if let Some(c) = data.commits.get(self.list_selected) {
-                    self.open_commit_diff(idx, c.hash.clone(), c.message.clone());
+                let commit = item.and_then(|i| {
+                    data?.commits
+                        .get(i)
+                        .map(|c| (c.hash.clone(), c.message.clone()))
+                });
+                if let Some((hash, message)) = commit {
+                    self.open_commit_diff(idx, hash, message);
                 }
             }
             RepoTab::Tags => {
@@ -692,7 +932,27 @@ impl App {
                     );
                 }
             }
-            RepoTab::Branches | RepoTab::Stash => {}
+            RepoTab::Branches => {
+                let name = item.and_then(|i| data?.branches.get(i).map(|b| b.name.clone()));
+                let path = self.repos.get(idx).map(|r| r.path.clone());
+                if let (Some(name), Some(path)) = (name, path) {
+                    self.status = self.tt("Loading log...", "ログを読み込み中...");
+                    let _ = self.job_tx.send(Job::LoadBranchLog {
+                        path,
+                        branch: name,
+                    });
+                }
+            }
+            RepoTab::Stash => {
+                let stash = item.and_then(|i| {
+                    data?.stashes
+                        .get(i)
+                        .map(|st| (st.ref_name.clone(), st.message.clone()))
+                });
+                if let Some((stash_ref, message)) = stash {
+                    self.open_commit_diff(idx, stash_ref, message);
+                }
+            }
         }
     }
 
@@ -796,7 +1056,10 @@ impl App {
         let Some(data) = self.repo_data.as_ref() else {
             return;
         };
-        let Some(tag) = data.tags.get(self.list_selected) else {
+        let Some(i) = self.selected_item_index() else {
+            return;
+        };
+        let Some(tag) = data.tags.get(i) else {
             return;
         };
         let name = tag.name.clone();
@@ -821,10 +1084,10 @@ impl App {
     }
 
     fn add_repo_from_path(&mut self, path_str: &str) {
-        let path = PathBuf::from(path_str.trim());
         if path_str.trim().is_empty() {
             return;
         }
+        let path = expand_user_path(path_str);
         if !git::is_git_repo(&path) {
             self.error = Some(format!(
                 "{}: {}",
@@ -853,6 +1116,7 @@ impl App {
         }
         let index = self.repos.len() - 1;
         let _ = self.job_tx.send(Job::LoadHome {
+            generation: self.home_gen,
             index,
             path,
             members: self.members.clone(),
@@ -867,8 +1131,9 @@ impl App {
         if i >= self.repos.len() {
             return;
         }
-        self.repos.remove(i);
+        let removed = self.repos.remove(i);
         if let Err(e) = config::save_repositories(&self.repos) {
+            self.repos.insert(i, removed);
             self.error = Some(e);
             return;
         }
@@ -894,6 +1159,7 @@ impl App {
             self.settings_selected = self.repos.len() - 1;
         }
         self.status = self.tt("Repository removed.", "リポジトリを削除しました。");
+        self.refresh_home();
     }
 
     fn pull_selected_home(&mut self) {
@@ -949,7 +1215,10 @@ impl App {
         let Some(data) = self.repo_data.as_ref() else {
             return;
         };
-        let Some(st) = data.stashes.get(self.list_selected) else {
+        let stash_ref = self.selected_item_index().and_then(|i| {
+            data.stashes.get(i).map(|st| st.ref_name.clone())
+        });
+        let Some(stash_ref) = stash_ref else {
             return;
         };
         let Some(repo) = self.repos.get(idx) else {
@@ -958,9 +1227,7 @@ impl App {
         self.status = self.t("apply_stash");
         let _ = self.job_tx.send(Job::StashApply {
             path: repo.path.clone(),
-            stash_ref: st.ref_name.clone(),
-            repo_idx: idx,
-            members: self.members.clone(),
+            stash_ref,
         });
     }
 
@@ -971,8 +1238,6 @@ impl App {
         let _ = self.job_tx.send(Job::StashDrop {
             path: repo.path.clone(),
             stash_ref,
-            repo_idx,
-            members: self.members.clone(),
         });
     }
 
@@ -986,15 +1251,27 @@ impl App {
 
     fn apply_msg(&mut self, msg: Msg) {
         match msg {
-            Msg::HomeLoaded { index, row } => match row {
-                Ok(r) => {
-                    self.home_rows.insert(index, r);
-                    if self.screen == Screen::Home {
-                        self.status.clear();
+            Msg::HomeLoaded {
+                generation,
+                index,
+                row,
+            } => {
+                if generation != self.home_gen {
+                    return;
+                }
+                match row {
+                    Ok(r) => {
+                        self.home_rows.insert(index, r);
+                        if self.screen == Screen::Home {
+                            self.status.clear();
+                        }
+                    }
+                    Err(e) => {
+                        self.home_rows.remove(&index);
+                        self.error = Some(e);
                     }
                 }
-                Err(e) => self.error = Some(e),
-            },
+            }
             Msg::RepoLoaded { index, data } => {
                 if self.repo_index != Some(index) {
                     return;
@@ -1091,7 +1368,7 @@ impl App {
                 if ok {
                     self.status = text;
                     if let Some(idx) = self.repo_index {
-                        self.open_repo(idx);
+                        self.reload_repo(idx);
                     } else {
                         self.refresh_home();
                     }
@@ -1099,6 +1376,18 @@ impl App {
                     self.error = Some(text);
                 }
             }
+            Msg::LogLoaded { title, body } => match body {
+                Ok(raw) => {
+                    self.status.clear();
+                    self.log = Some(LogView {
+                        title,
+                        body: strip_ansi(&raw),
+                        scroll: 0,
+                    });
+                    self.screen = Screen::Log;
+                }
+                Err(e) => self.error = Some(e),
+            },
         }
     }
 }
@@ -1198,12 +1487,17 @@ fn spawn_worker(job_rx: Receiver<Job>, msg_tx: Sender<Msg>) {
         while let Ok(job) = job_rx.recv() {
             let msg = match job {
                 Job::LoadHome {
+                    generation,
                     index,
                     path,
                     members,
                 } => {
                     let row = load_home_row(&path, &members);
-                    Msg::HomeLoaded { index, row }
+                    Msg::HomeLoaded {
+                        generation,
+                        index,
+                        row,
+                    }
                 }
                 Job::LoadRepo {
                     index,
@@ -1261,38 +1555,21 @@ fn spawn_worker(job_rx: Receiver<Job>, msg_tx: Sender<Msg>) {
                     Ok(t) => Msg::OpDone { ok: true, text: t },
                     Err(t) => Msg::OpDone { ok: false, text: t },
                 },
-                Job::StashApply {
-                    path,
-                    stash_ref,
-                    repo_idx,
-                    members,
-                } => match git::apply_stash(&path, &stash_ref) {
-                    Ok(t) => {
-                        let _ = msg_tx.send(Msg::OpDone { ok: true, text: t });
-                        let data = Box::new(load_repo(&path, &members));
-                        Msg::RepoLoaded {
-                            index: repo_idx,
-                            data,
-                        }
-                    }
+                Job::StashApply { path, stash_ref } => match git::apply_stash(&path, &stash_ref) {
+                    Ok(t) => Msg::OpDone { ok: true, text: t },
                     Err(t) => Msg::OpDone { ok: false, text: t },
                 },
-                Job::StashDrop {
-                    path,
-                    stash_ref,
-                    repo_idx,
-                    members,
-                } => match git::drop_stash(&path, &stash_ref) {
-                    Ok(t) => {
-                        let _ = msg_tx.send(Msg::OpDone { ok: true, text: t });
-                        let data = Box::new(load_repo(&path, &members));
-                        Msg::RepoLoaded {
-                            index: repo_idx,
-                            data,
-                        }
-                    }
+                Job::StashDrop { path, stash_ref } => match git::drop_stash(&path, &stash_ref) {
+                    Ok(t) => Msg::OpDone { ok: true, text: t },
                     Err(t) => Msg::OpDone { ok: false, text: t },
                 },
+                Job::LoadBranchLog { path, branch } => {
+                    let body = git::get_branch_oneline_log(&path, &branch, 200);
+                    Msg::LogLoaded {
+                        title: branch,
+                        body,
+                    }
+                }
             };
             if msg_tx.send(msg).is_err() {
                 break;
@@ -1319,20 +1596,69 @@ fn load_home_row(path: &std::path::Path, members: &[Member]) -> Result<HomeRow, 
 
 fn load_repo(path: &std::path::Path, members: &[Member]) -> Result<RepoSnapshot, String> {
     let summary = git::get_summary(path, members)?;
-    let commits = git::get_commits_for_diff(path).unwrap_or_default();
-    let branches = git::get_branches(path).unwrap_or_default();
-    let tags = git::get_tags(path).unwrap_or_default();
-    let stashes = git::get_stash_list(path).unwrap_or_default();
-    let working_files =
-        git::get_changed_files(path, None, "WORKING_TREE", false).unwrap_or_default();
+    let (commits, commits_err) = split_list(git::get_commits_for_diff(path));
+    let (branches, branches_err) = split_list(git::get_branches(path));
+    let (tags, tags_err) = split_list(git::get_tags(path));
+    let (stashes, stashes_err) = split_list(git::get_stash_list(path));
+    let (working_files, working_err) =
+        split_list(git::get_changed_files(path, None, "WORKING_TREE", false));
     Ok(RepoSnapshot {
         summary,
         commits,
+        commits_err,
         branches,
+        branches_err,
         tags,
+        tags_err,
         stashes,
+        stashes_err,
         working_files,
+        working_err,
     })
+}
+
+fn split_list<T>(result: Result<Vec<T>, String>) -> (Vec<T>, Option<String>) {
+    match result {
+        Ok(v) => (v, None),
+        Err(e) => (Vec::new(), Some(e)),
+    }
+}
+
+fn expand_user_path(raw: &str) -> PathBuf {
+    let raw = raw.trim();
+    if raw == "~" {
+        return home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home_dir()
+            .map(|h| h.join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw));
+    }
+    PathBuf::from(raw)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for x in chars.by_ref() {
+                if x.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1438,5 +1764,99 @@ mod tests {
         assert!(is_hunk_start(&lines, 1));
         assert!(!is_hunk_start(&lines, 2));
         assert!(is_hunk_start(&lines, 4));
+    }
+
+    #[test]
+    fn open_repo_lands_on_commits() {
+        let mut app = App::new();
+        app.repos = vec![repo("alpha", "/tmp/alpha")];
+        app.open_repo(0);
+        assert_eq!(app.screen, Screen::Repo);
+        assert_eq!(app.repo_tab, RepoTab::Commits);
+    }
+
+    #[test]
+    fn q_quits_from_repo_and_esc_goes_home() {
+        let mut app = App::new();
+        app.screen = Screen::Repo;
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.screen, Screen::Home);
+        assert!(!app.should_quit);
+        app.screen = Screen::Repo;
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn help_returns_to_previous_screen() {
+        let mut app = App::new();
+        app.screen = Screen::Repo;
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        assert_eq!(app.screen, Screen::Help);
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.screen, Screen::Repo);
+    }
+
+    #[test]
+    fn expand_tilde_and_strip_ansi() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/x".into());
+        assert_eq!(
+            expand_user_path("~/work/repo"),
+            PathBuf::from(home).join("work/repo")
+        );
+        assert_eq!(strip_ansi("\u{1b}[32mgreen\u{1b}[0m"), "green");
+    }
+
+    #[test]
+    fn commit_filter_narrows_visible_indices() {
+        let mut app = App::new();
+        app.screen = Screen::Repo;
+        app.repo_tab = RepoTab::Commits;
+        app.repo_data = Some(RepoSnapshot {
+            summary: crate::git::Summary {
+                repo_name: "x".into(),
+                repo_path: "/tmp/x".into(),
+                current_branch: "main".into(),
+                total_commits: 2,
+                total_contributors: 1,
+                total_branches: 1,
+                total_files: 1,
+                total_size_bytes: 0,
+                total_size_formatted: "0".into(),
+                has_upstream: false,
+                ahead: 0,
+                behind: 0,
+                has_remote: false,
+                uncommitted_changes: 0,
+            },
+            commits: vec![
+                CommitSummary {
+                    hash: "aaa".into(),
+                    author: "Ann".into(),
+                    date: "2026-01-01".into(),
+                    message: "fix footer".into(),
+                },
+                CommitSummary {
+                    hash: "bbb".into(),
+                    author: "Bob".into(),
+                    date: "2026-01-02".into(),
+                    message: "add tui".into(),
+                },
+            ],
+            commits_err: None,
+            branches: vec![],
+            branches_err: None,
+            tags: vec![],
+            tags_err: None,
+            stashes: vec![],
+            stashes_err: None,
+            working_files: vec![],
+            working_err: None,
+        });
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+        assert_eq!(app.visible_indices(), vec![1]);
     }
 }
