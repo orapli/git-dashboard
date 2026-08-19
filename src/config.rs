@@ -158,8 +158,8 @@ pub struct Preferences {
     // Recent range comparisons (capped per repo and overall)
     pub recent_compares: Vec<RecentCompare>,
     /// External diff tool. Empty = TUI builtin. `{path}` `{range}` `{base}` `{target}` `{file}`
-    /// expand. A bare `hunk` / `hunkdiff` uses `hunk show` / `hunk diff`.
-    /// Commit compares are one arg (`aaaa..bbbb`); a space is a file compare.
+    /// expand. A bare `hunk` uses `hunk diff` (working tree or `aaaa..bbbb`)
+    /// and `hunk show <hash>` (single commit). A space between refs is a file compare.
     #[serde(default)]
     pub diff_command: String,
     /// 0=name asc, 1=name desc, 2=updated desc, 3=updated asc

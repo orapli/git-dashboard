@@ -2293,7 +2293,7 @@ fn resolve_diff_command(
         if let Some(b) = base {
             return Ok(ExternalDiff {
                 program: first.to_string(),
-                args: vec!["show".into(), format!("{b}..{target}")],
+                args: vec!["diff".into(), format!("{b}..{target}")],
                 cwd: repo.to_path_buf(),
                 pipe_git_diff: None,
             });
@@ -2327,9 +2327,17 @@ fn resolve_diff_command(
         .next()
         .ok_or_else(|| "diff command has no program".to_string())?
         .to_string();
+    let mut args: Vec<String> = parts.map(str::to_string).collect();
+    let is_hunk_bin = program == "hunk" || program == "hunkdiff" || program.ends_with("/hunk");
+    if is_hunk_bin
+        && args.first().is_some_and(|a| a == "show")
+        && args.get(1).is_some_and(|a| a.contains(".."))
+    {
+        args[0] = "diff".into();
+    }
     Ok(ExternalDiff {
         program,
-        args: parts.map(str::to_string).collect(),
+        args,
         cwd: repo.to_path_buf(),
         pipe_git_diff: None,
     })
@@ -2734,11 +2742,11 @@ mod tests {
         let show = resolve_diff_command("hunk", &repo, None, "abc123").unwrap();
         assert_eq!(show.args, vec!["show", "abc123"]);
         let range = resolve_diff_command("hunk", &repo, Some("aaa"), "bbb").unwrap();
-        assert_eq!(range.args, vec!["show", "aaa..bbb"]);
+        assert_eq!(range.args, vec!["diff", "aaa..bbb"]);
         assert!(range.pipe_git_diff.is_none());
         let templated =
             resolve_diff_command("hunk show {base} {target}", &repo, Some("aaa"), "bbb").unwrap();
-        assert_eq!(templated.args, vec!["show", "aaa..bbb"]);
+        assert_eq!(templated.args, vec!["diff", "aaa..bbb"]);
         assert!(resolve_diff_command("", &repo, None, "abc").is_err());
     }
 }
